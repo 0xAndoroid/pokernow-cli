@@ -248,3 +248,141 @@ fn position_tag(pos: Position) -> &'static str {
         Position::CO => "CO",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::test_helpers::*;
+
+    #[test]
+    fn display_hand_no_panic() {
+        let b = HandBuilder::new()
+            .player_with_hand("p1", 1, "Alice", 100.0, &["As", "Kd"])
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0)
+            .call(2, 3.0)
+            .fold(3)
+            .flop(&["Ah", "Kh", "Qs"])
+            .bet(1, 5.0)
+            .call(2, 5.0)
+            .turn("Js")
+            .bet(1, 10.0)
+            .fold(2)
+            .win(1, 26.0);
+
+        let hand = parse_single_hand(&b).unwrap();
+        display_hand(&hand);
+    }
+
+    #[test]
+    fn display_hand_through_river() {
+        let b = HandBuilder::new()
+            .player_with_hand("p1", 1, "Alice", 100.0, &["As", "Kd"])
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .call(1, 1.0)
+            .check(2)
+            .flop(&["Ah", "Kh", "Qs"])
+            .check(1)
+            .check(2)
+            .turn("Js")
+            .check(1)
+            .check(2)
+            .river("Ts")
+            .check(1)
+            .check(2)
+            .showdown()
+            .show(1, &["As", "Kd"])
+            .show(2, &["9s", "8s"])
+            .win(1, 2.0);
+
+        let hand = parse_single_hand(&b).unwrap();
+        display_hand(&hand);
+    }
+
+    #[test]
+    fn display_hand_with_all_in() {
+        let b = HandBuilder::new()
+            .player_with_hand("p1", 1, "Alice", 100.0, &["As", "Kd"])
+            .player("p2", 2, "Bob", 50.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .bet_all_in(1, 100.0)
+            .call_all_in(2, 50.0)
+            .uncalled_return(1, 50.0)
+            .flop(&["Ah", "Kh", "Qs"])
+            .turn("Js")
+            .river("Ts")
+            .showdown()
+            .show(1, &["As", "Kd"])
+            .show(2, &["9s", "8s"])
+            .win(1, 100.0);
+
+        let hand = parse_single_hand(&b).unwrap();
+        display_hand(&hand);
+    }
+
+    #[test]
+    fn display_preflop_only() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .win(2, 1.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        display_hand(&hand);
+    }
+
+    #[test]
+    fn display_hand_no_winners() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1);
+
+        let hand = parse_single_hand(&b).unwrap();
+        display_hand(&hand);
+    }
+
+    #[test]
+    fn format_chips_integer() {
+        assert_eq!(format_chips(10.0), "10");
+        assert_eq!(format_chips(0.0), "0");
+    }
+
+    #[test]
+    fn format_chips_fractional() {
+        assert_eq!(format_chips(10.5), "10.5");
+    }
+
+    #[test]
+    fn format_bb_works() {
+        assert_eq!(format_bb(100.0), "100");
+        assert_eq!(format_bb(99.5), "99.5");
+        assert_eq!(format_bb(100.001), "100");
+    }
+
+    #[test]
+    fn position_tag_all() {
+        assert_eq!(position_tag(Position::BTN), "BTN");
+        assert_eq!(position_tag(Position::SB), "SB");
+        assert_eq!(position_tag(Position::BB), "BB");
+        assert_eq!(position_tag(Position::EP), "EP");
+        assert_eq!(position_tag(Position::MP), "MP");
+        assert_eq!(position_tag(Position::CO), "CO");
+    }
+}

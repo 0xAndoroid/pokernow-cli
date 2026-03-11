@@ -30,6 +30,10 @@ cast_possible_truncation = "allow"
 upper_case_acronyms = "allow"
 cast_precision_loss = "allow"
 
+[dev-dependencies]
+tempfile = "3"
+serde_json = "1"
+
 [profile.release]
 lto = true
 codegen-units = 1

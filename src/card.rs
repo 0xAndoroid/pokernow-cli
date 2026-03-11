@@ -553,3 +553,472 @@ fn detect_straight_draw(all: &[Card]) -> Option<String> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn c(s: &str) -> Card {
+        Card::parse(s).unwrap()
+    }
+
+    fn cards(ss: &[&str]) -> Vec<Card> {
+        ss.iter().map(|s| c(s)).collect()
+    }
+
+    // --- Card parsing ---
+
+    #[test]
+    fn parse_valid_cards() {
+        let card = c("As");
+        assert_eq!(card.rank(), 14);
+        assert_eq!(card.suit(), 3);
+        assert_eq!(card.to_string(), "As");
+
+        let card = c("2c");
+        assert_eq!(card.rank(), 2);
+        assert_eq!(card.suit(), 0);
+
+        let card = c("Td");
+        assert_eq!(card.rank(), 10);
+        assert_eq!(card.suit(), 1);
+
+        let card = c("Kh");
+        assert_eq!(card.rank(), 13);
+        assert_eq!(card.suit(), 2);
+    }
+
+    #[test]
+    fn parse_case_insensitive() {
+        assert!(Card::parse("aS").is_some());
+        assert!(Card::parse("tC").is_some());
+        assert!(Card::parse("jD").is_some());
+        assert!(Card::parse("qH").is_some());
+    }
+
+    #[test]
+    fn parse_invalid_cards() {
+        assert!(Card::parse("").is_none());
+        assert!(Card::parse("A").is_none());
+        assert!(Card::parse("1s").is_none());
+        assert!(Card::parse("Ax").is_none());
+        assert!(Card::parse("Asc").is_none());
+    }
+
+    #[test]
+    fn card_new_roundtrip() {
+        for rank in 2..=14u8 {
+            for suit in 0..4u8 {
+                let card = Card::new(rank, suit);
+                assert_eq!(card.rank(), rank);
+                assert_eq!(card.suit(), suit);
+            }
+        }
+    }
+
+    #[test]
+    fn card_display() {
+        assert_eq!(c("As").to_string(), "As");
+        assert_eq!(c("Tc").to_string(), "Tc");
+        assert_eq!(c("2d").to_string(), "2d");
+    }
+
+    #[test]
+    fn rank_char_all() {
+        assert_eq!(rank_char(2), '2');
+        assert_eq!(rank_char(10), 'T');
+        assert_eq!(rank_char(11), 'J');
+        assert_eq!(rank_char(12), 'Q');
+        assert_eq!(rank_char(13), 'K');
+        assert_eq!(rank_char(14), 'A');
+        assert_eq!(rank_char(0), '?');
+    }
+
+    #[test]
+    fn suit_char_all() {
+        assert_eq!(suit_char(0), 'c');
+        assert_eq!(suit_char(1), 'd');
+        assert_eq!(suit_char(2), 'h');
+        assert_eq!(suit_char(3), 's');
+        assert_eq!(suit_char(4), '?');
+    }
+
+    // --- Hand evaluation: all categories ---
+
+    #[test]
+    fn eval_high_card() {
+        let hand = eval5([c("As"), c("Kd"), c("9h"), c("7c"), c("2s")]);
+        assert_eq!(hand.category, HandCategory::HighCard);
+        assert_eq!(hand.details[0], 14);
+    }
+
+    #[test]
+    fn eval_one_pair() {
+        let hand = eval5([c("Ks"), c("Kd"), c("9h"), c("7c"), c("2s")]);
+        assert_eq!(hand.category, HandCategory::OnePair);
+        assert_eq!(hand.details[0], 13);
+    }
+
+    #[test]
+    fn eval_two_pair() {
+        let hand = eval5([c("Ks"), c("Kd"), c("5h"), c("5c"), c("9s")]);
+        assert_eq!(hand.category, HandCategory::TwoPair);
+        assert_eq!(hand.details[0], 13);
+        assert_eq!(hand.details[1], 5);
+    }
+
+    #[test]
+    fn eval_three_of_a_kind() {
+        let hand = eval5([c("7s"), c("7d"), c("7h"), c("Kc"), c("2s")]);
+        assert_eq!(hand.category, HandCategory::ThreeOfAKind);
+        assert_eq!(hand.details[0], 7);
+    }
+
+    #[test]
+    fn eval_straight_normal() {
+        let hand = eval5([c("9s"), c("8d"), c("7h"), c("6c"), c("5s")]);
+        assert_eq!(hand.category, HandCategory::Straight);
+        assert_eq!(hand.details[0], 9);
+    }
+
+    #[test]
+    fn eval_wheel_straight() {
+        let hand = eval5([c("5s"), c("4d"), c("3h"), c("2c"), c("As")]);
+        assert_eq!(hand.category, HandCategory::Straight);
+        assert_eq!(hand.details[0], 5);
+    }
+
+    #[test]
+    fn eval_broadway_straight() {
+        let hand = eval5([c("Ac"), c("Kd"), c("Qh"), c("Js"), c("Tc")]);
+        assert_eq!(hand.category, HandCategory::Straight);
+        assert_eq!(hand.details[0], 14);
+    }
+
+    #[test]
+    fn eval_flush() {
+        let hand = eval5([c("As"), c("Js"), c("9s"), c("5s"), c("3s")]);
+        assert_eq!(hand.category, HandCategory::Flush);
+        assert_eq!(hand.details[0], 14);
+    }
+
+    #[test]
+    fn eval_full_house() {
+        let hand = eval5([c("Ks"), c("Kd"), c("Kh"), c("5c"), c("5s")]);
+        assert_eq!(hand.category, HandCategory::FullHouse);
+        assert_eq!(hand.details[0], 13);
+        assert_eq!(hand.details[1], 5);
+    }
+
+    #[test]
+    fn eval_four_of_a_kind() {
+        let hand = eval5([c("Qs"), c("Qd"), c("Qh"), c("Qc"), c("2s")]);
+        assert_eq!(hand.category, HandCategory::FourOfAKind);
+        assert_eq!(hand.details[0], 12);
+    }
+
+    #[test]
+    fn eval_straight_flush() {
+        let hand = eval5([c("9h"), c("8h"), c("7h"), c("6h"), c("5h")]);
+        assert_eq!(hand.category, HandCategory::StraightFlush);
+        assert_eq!(hand.details[0], 9);
+    }
+
+    #[test]
+    fn eval_royal_flush() {
+        let hand = eval5([c("As"), c("Ks"), c("Qs"), c("Js"), c("Ts")]);
+        assert_eq!(hand.category, HandCategory::StraightFlush);
+        assert_eq!(hand.details[0], 14);
+    }
+
+    #[test]
+    fn eval_wheel_straight_flush() {
+        let hand = eval5([c("5d"), c("4d"), c("3d"), c("2d"), c("Ad")]);
+        assert_eq!(hand.category, HandCategory::StraightFlush);
+        assert_eq!(hand.details[0], 5);
+    }
+
+    // --- Ranking comparisons ---
+
+    #[test]
+    fn hand_category_ordering() {
+        let high_card = eval5([c("As"), c("Kd"), c("9h"), c("7c"), c("2s")]);
+        let pair = eval5([c("Ks"), c("Kd"), c("9h"), c("7c"), c("2s")]);
+        let flush = eval5([c("As"), c("Js"), c("9s"), c("5s"), c("3s")]);
+        let full_house = eval5([c("Ks"), c("Kd"), c("Kh"), c("5c"), c("5s")]);
+        let sf = eval5([c("9h"), c("8h"), c("7h"), c("6h"), c("5h")]);
+
+        assert!(high_card < pair);
+        assert!(pair < flush);
+        assert!(flush < full_house);
+        assert!(full_house < sf);
+    }
+
+    #[test]
+    fn flush_beats_straight_not_straight_flush() {
+        let straight = eval5([c("9s"), c("8d"), c("7h"), c("6c"), c("5s")]);
+        let flush = eval5([c("As"), c("Js"), c("9s"), c("5s"), c("3s")]);
+        let sf = eval5([c("9h"), c("8h"), c("7h"), c("6h"), c("5h")]);
+
+        assert!(straight < flush);
+        assert!(flush < sf);
+        assert_eq!(straight.category, HandCategory::Straight);
+        assert_eq!(flush.category, HandCategory::Flush);
+        assert_eq!(sf.category, HandCategory::StraightFlush);
+    }
+
+    #[test]
+    fn kicker_comparison() {
+        let pair_k_a = eval5([c("Ks"), c("Kd"), c("Ah"), c("7c"), c("2s")]);
+        let pair_k_q = eval5([c("Ks"), c("Kd"), c("Qh"), c("7c"), c("2s")]);
+        assert!(pair_k_a > pair_k_q);
+    }
+
+    // --- evaluate() with 7 cards ---
+
+    #[test]
+    fn evaluate_7_cards_picks_best() {
+        let all = cards(&["As", "Ks", "Qs", "Js", "Ts", "2c", "3d"]);
+        let rank = evaluate(&all);
+        assert_eq!(rank.category, HandCategory::StraightFlush);
+        assert_eq!(rank.details[0], 14);
+    }
+
+    #[test]
+    fn evaluate_6_cards() {
+        let all = cards(&["As", "Ad", "Ah", "Kc", "Ks", "2c"]);
+        let rank = evaluate(&all);
+        assert_eq!(rank.category, HandCategory::FullHouse);
+    }
+
+    // --- Omaha evaluation ---
+
+    #[test]
+    fn evaluate_omaha_2_plus_3() {
+        let hole = cards(&["As", "Kd", "Qs", "Jd"]);
+        let board = cards(&["Ts", "9s", "8s", "2c", "3c"]);
+        let rank = evaluate_omaha(&hole, &board);
+        // Must use exactly 2 hole + 3 board. Best: As Qs + Ts 9s 8s = flush
+        assert_eq!(rank.category, HandCategory::Flush);
+    }
+
+    #[test]
+    fn omaha_cannot_use_three_hole_cards() {
+        let hole = cards(&["As", "Ks", "Qs", "2d"]);
+        let board = cards(&["Js", "Ts", "3h", "4h", "5h"]);
+        // If we could use 3 hole: As Ks Qs Js Ts = royal flush
+        // With 2+3 constraint, best is different
+        let rank = evaluate_omaha(&hole, &board);
+        assert_ne!(rank.category, HandCategory::StraightFlush);
+    }
+
+    #[test]
+    fn omaha_cannot_use_four_board_cards() {
+        let hole = cards(&["2d", "3c", "7h", "8h"]);
+        let board = cards(&["As", "Ks", "Qs", "Js", "Ts"]);
+        // Board has royal flush, but Omaha needs exactly 2 hole cards
+        let rank = evaluate_omaha(&hole, &board);
+        assert_ne!(rank.category, HandCategory::StraightFlush);
+    }
+
+    // --- Hand descriptions ---
+
+    #[test]
+    fn description_high_card() {
+        let rank = eval5([c("As"), c("Kd"), c("9h"), c("7c"), c("2s")]);
+        assert_eq!(hand_description(&rank), "ace-high");
+    }
+
+    #[test]
+    fn description_pair() {
+        let rank = eval5([c("5s"), c("5d"), c("Ah"), c("Kc"), c("2s")]);
+        assert_eq!(hand_description(&rank), "pair of fives");
+    }
+
+    #[test]
+    fn description_two_pair() {
+        let rank = eval5([c("Ks"), c("Kd"), c("5h"), c("5c"), c("9s")]);
+        assert_eq!(hand_description(&rank), "two pair, kings and fives");
+    }
+
+    #[test]
+    fn description_three_of_a_kind() {
+        let rank = eval5([c("7s"), c("7d"), c("7h"), c("Kc"), c("2s")]);
+        assert_eq!(hand_description(&rank), "three of a kind, sevens");
+    }
+
+    #[test]
+    fn description_straight_ace_to_ten() {
+        let rank = eval5([c("Ac"), c("Kd"), c("Qh"), c("Js"), c("Tc")]);
+        assert_eq!(hand_description(&rank), "straight, ace to ten");
+    }
+
+    #[test]
+    fn description_straight_ace_to_five() {
+        let rank = eval5([c("5s"), c("4d"), c("3h"), c("2c"), c("As")]);
+        assert_eq!(hand_description(&rank), "straight, ace to five");
+    }
+
+    #[test]
+    fn description_straight_normal() {
+        let rank = eval5([c("9s"), c("8d"), c("7h"), c("6c"), c("5s")]);
+        assert_eq!(hand_description(&rank), "straight, nine to five");
+    }
+
+    #[test]
+    fn description_flush() {
+        let rank = eval5([c("As"), c("Js"), c("9s"), c("5s"), c("3s")]);
+        assert_eq!(hand_description(&rank), "flush, ace-high");
+    }
+
+    #[test]
+    fn description_full_house() {
+        let rank = eval5([c("Ks"), c("Kd"), c("Kh"), c("5c"), c("5s")]);
+        assert_eq!(hand_description(&rank), "full house, kings full of fives");
+    }
+
+    #[test]
+    fn description_four_of_a_kind() {
+        let rank = eval5([c("Qs"), c("Qd"), c("Qh"), c("Qc"), c("2s")]);
+        assert_eq!(hand_description(&rank), "four of a kind, queens");
+    }
+
+    #[test]
+    fn description_royal_flush() {
+        let rank = eval5([c("As"), c("Ks"), c("Qs"), c("Js"), c("Ts")]);
+        assert_eq!(hand_description(&rank), "royal flush");
+    }
+
+    #[test]
+    fn description_straight_flush() {
+        let rank = eval5([c("9h"), c("8h"), c("7h"), c("6h"), c("5h")]);
+        assert_eq!(hand_description(&rank), "straight flush, nine-high");
+    }
+
+    // --- Holding descriptions (contextual) ---
+
+    #[test]
+    fn holding_preflop_pocket_pair() {
+        let hole = cards(&["As", "Ad"]);
+        assert_eq!(holding_description(&hole, &[]), "pocket aces");
+    }
+
+    #[test]
+    fn holding_preflop_suited() {
+        let hole = cards(&["As", "Ks"]);
+        assert_eq!(holding_description(&hole, &[]), "A-K suited");
+    }
+
+    #[test]
+    fn holding_preflop_offsuit() {
+        let hole = cards(&["As", "Kd"]);
+        assert_eq!(holding_description(&hole, &[]), "A-K offsuit");
+    }
+
+    #[test]
+    fn holding_top_pair() {
+        let hole = cards(&["As", "2d"]);
+        let board = cards(&["Ac", "Kh", "9s"]);
+        let desc = holding_description(&hole, &board);
+        assert!(desc.contains("top pair"), "expected top pair, got: {desc}");
+    }
+
+    #[test]
+    fn holding_overpair() {
+        let hole = cards(&["As", "Ad"]);
+        let board = cards(&["Kc", "Qh", "9s"]);
+        let desc = holding_description(&hole, &board);
+        assert!(desc.contains("overpair"), "expected overpair, got: {desc}");
+    }
+
+    #[test]
+    fn holding_set_vs_trips() {
+        let hole_set = cards(&["7s", "7d"]);
+        let board = cards(&["7h", "Kc", "2s"]);
+        let desc_set = holding_description(&hole_set, &board);
+        assert!(desc_set.contains("set"), "expected set, got: {desc_set}");
+
+        let hole_trips = cards(&["7s", "Kd"]);
+        let board_trips = cards(&["7h", "7c", "2s"]);
+        let desc_trips = holding_description(&hole_trips, &board_trips);
+        assert!(desc_trips.contains("trip"), "expected trips, got: {desc_trips}");
+    }
+
+    #[test]
+    fn holding_bottom_pair() {
+        let hole = cards(&["2s", "3d"]);
+        let board = cards(&["Ac", "Kh", "2d"]);
+        let desc = holding_description(&hole, &board);
+        assert!(desc.contains("bottom pair"), "expected bottom pair, got: {desc}");
+    }
+
+    #[test]
+    fn holding_partial_cards() {
+        let hole = cards(&["As"]);
+        let desc = holding_description(&hole, &[]);
+        assert_eq!(desc, "As");
+    }
+
+    // --- Draw detection ---
+
+    #[test]
+    fn detect_flush_draw_with_ace() {
+        let hole = cards(&["As", "2s"]);
+        let board = cards(&["Ks", "9s", "3d"]);
+        let desc = holding_description(&hole, &board);
+        assert!(desc.contains("nut flush draw"), "expected nut flush draw, got: {desc}");
+    }
+
+    #[test]
+    fn detect_flush_draw_non_nut() {
+        let hole = cards(&["Qs", "2s"]);
+        let board = cards(&["Ks", "9s", "3d"]);
+        let desc = holding_description(&hole, &board);
+        assert!(desc.contains("flush draw"), "expected flush draw, got: {desc}");
+        assert!(!desc.contains("nut"), "should not be nut flush draw, got: {desc}");
+    }
+
+    #[test]
+    fn detect_oesd() {
+        let hole = cards(&["8s", "7d"]);
+        let board = cards(&["6c", "5h", "2s"]);
+        let desc = holding_description(&hole, &board);
+        assert!(desc.contains("open-ended straight draw"), "expected OESD, got: {desc}");
+    }
+
+    #[test]
+    fn detect_gutshot() {
+        let hole = cards(&["8s", "7d"]);
+        let board = cards(&["5c", "4h", "2s"]);
+        let desc = holding_description(&hole, &board);
+        assert!(desc.contains("gutshot straight draw"), "expected gutshot, got: {desc}");
+    }
+
+    #[test]
+    fn no_draw_on_river() {
+        let hole = cards(&["8s", "7d"]);
+        let board = cards(&["6c", "5h", "2s", "Kd", "Qh"]);
+        let desc = holding_description(&hole, &board);
+        assert!(!desc.contains("draw"), "no draws on river, got: {desc}");
+    }
+
+    // --- HandRank::worst ---
+
+    #[test]
+    fn worst_rank_loses_to_everything() {
+        let worst = HandRank::worst();
+        let high_card = eval5([c("7s"), c("5d"), c("4h"), c("3c"), c("2s")]);
+        assert!(worst < high_card);
+    }
+
+    // --- rank_name / rank_name_plural ---
+
+    #[test]
+    fn rank_names() {
+        assert_eq!(rank_name(14), "ace");
+        assert_eq!(rank_name(2), "two");
+        assert_eq!(rank_name(0), "unknown");
+        assert_eq!(rank_name_plural(14), "aces");
+        assert_eq!(rank_name_plural(6), "sixes");
+    }
+}

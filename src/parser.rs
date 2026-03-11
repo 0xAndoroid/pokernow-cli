@@ -150,9 +150,9 @@ struct RawPayload {
     bomb_pot: Option<bool>,
 }
 
-pub fn parse_files(
+pub fn parse_files<S: std::hash::BuildHasher>(
     paths: &[String],
-    unify: &HashMap<String, String>,
+    unify: &HashMap<String, String, S>,
 ) -> Result<GameData, Box<dyn std::error::Error>> {
     let mut all_hands = Vec::new();
     let mut player_names: HashMap<String, String> = HashMap::new();
@@ -182,9 +182,9 @@ pub fn parse_files(
     })
 }
 
-fn build_id_unify_map(
+fn build_id_unify_map<S: std::hash::BuildHasher>(
     paths: &[String],
-    unify: &HashMap<String, String>,
+    unify: &HashMap<String, String, S>,
 ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
     if unify.is_empty() {
         return Ok(HashMap::new());
@@ -538,4 +538,796 @@ pub fn is_monetary(at: ActionType) -> bool {
             | ActionType::Call
             | ActionType::Bet
     )
+}
+
+#[cfg(test)]
+#[allow(clippy::type_complexity, clippy::needless_pass_by_value)]
+pub mod test_helpers {
+    use super::*;
+    use std::collections::HashMap;
+
+    pub struct HandBuilder {
+        id: String,
+        number: u32,
+        game_type: String,
+        small_blind: f64,
+        big_blind: f64,
+        dealer_seat: u8,
+        bomb_pot: bool,
+        players: Vec<(String, u8, String, f64, Option<Vec<String>>)>,
+        events: Vec<serde_json::Value>,
+    }
+
+    impl Default for HandBuilder {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl HandBuilder {
+        pub fn new() -> Self {
+            Self {
+                id: "test_hand".into(),
+                number: 1,
+                game_type: "th".into(),
+                small_blind: 0.5,
+                big_blind: 1.0,
+                dealer_seat: 1,
+                bomb_pot: false,
+                players: Vec::new(),
+                events: Vec::new(),
+            }
+        }
+
+        pub fn id(mut self, id: &str) -> Self {
+            self.id = id.into();
+            self
+        }
+
+        pub fn number(mut self, n: u32) -> Self {
+            self.number = n;
+            self
+        }
+
+        pub fn game_type(mut self, gt: &str) -> Self {
+            self.game_type = gt.into();
+            self
+        }
+
+        pub fn blinds(mut self, sb: f64, bb: f64) -> Self {
+            self.small_blind = sb;
+            self.big_blind = bb;
+            self
+        }
+
+        pub fn dealer(mut self, seat: u8) -> Self {
+            self.dealer_seat = seat;
+            self
+        }
+
+        pub fn bomb_pot(mut self) -> Self {
+            self.bomb_pot = true;
+            self
+        }
+
+        pub fn player(mut self, id: &str, seat: u8, name: &str, stack: f64) -> Self {
+            self.players.push((id.into(), seat, name.into(), stack, None));
+            self
+        }
+
+        pub fn player_with_hand(
+            mut self,
+            id: &str,
+            seat: u8,
+            name: &str,
+            stack: f64,
+            cards: &[&str],
+        ) -> Self {
+            self.players.push((
+                id.into(),
+                seat,
+                name.into(),
+                stack,
+                Some(cards.iter().map(|s| (*s).to_string()).collect()),
+            ));
+            self
+        }
+
+        pub fn event(mut self, payload: serde_json::Value) -> Self {
+            self.events.push(serde_json::json!({ "payload": payload }));
+            self
+        }
+
+        pub fn sb(self, seat: u8, value: f64) -> Self {
+            self.event(serde_json::json!({"type": 3, "seat": seat, "value": value}))
+        }
+
+        pub fn bb(self, seat: u8, value: f64) -> Self {
+            self.event(serde_json::json!({"type": 2, "seat": seat, "value": value}))
+        }
+
+        pub fn ante(self, seat: u8, value: f64) -> Self {
+            self.event(serde_json::json!({"type": 4, "seat": seat, "value": value}))
+        }
+
+        pub fn fold(self, seat: u8) -> Self {
+            self.event(serde_json::json!({"type": 0, "seat": seat}))
+        }
+
+        pub fn check(self, seat: u8) -> Self {
+            self.event(serde_json::json!({"type": 1, "seat": seat}))
+        }
+
+        pub fn call(self, seat: u8, value: f64) -> Self {
+            self.event(serde_json::json!({"type": 7, "seat": seat, "value": value}))
+        }
+
+        pub fn call_all_in(self, seat: u8, value: f64) -> Self {
+            self.event(serde_json::json!({"type": 7, "seat": seat, "value": value, "allIn": true}))
+        }
+
+        pub fn bet(self, seat: u8, value: f64) -> Self {
+            self.event(serde_json::json!({"type": 8, "seat": seat, "value": value}))
+        }
+
+        pub fn bet_all_in(self, seat: u8, value: f64) -> Self {
+            self.event(serde_json::json!({"type": 8, "seat": seat, "value": value, "allIn": true}))
+        }
+
+        pub fn flop(self, cards: &[&str]) -> Self {
+            let cs: Vec<serde_json::Value> =
+                cards.iter().map(|s| serde_json::Value::String(s.to_string())).collect();
+            self.event(serde_json::json!({"type": 9, "turn": 1, "run": 1, "cards": cs}))
+        }
+
+        pub fn turn(self, card: &str) -> Self {
+            self.event(serde_json::json!({"type": 9, "turn": 2, "run": 1, "cards": [card]}))
+        }
+
+        pub fn river(self, card: &str) -> Self {
+            self.event(serde_json::json!({"type": 9, "turn": 3, "run": 1, "cards": [card]}))
+        }
+
+        pub fn board_run2(self, turn_val: u8, cards: &[&str]) -> Self {
+            let cs: Vec<serde_json::Value> =
+                cards.iter().map(|s| serde_json::Value::String(s.to_string())).collect();
+            self.event(serde_json::json!({"type": 9, "turn": turn_val, "run": 2, "cards": cs}))
+        }
+
+        pub fn win(self, seat: u8, value: f64) -> Self {
+            self.event(serde_json::json!({"type": 10, "seat": seat, "value": value}))
+        }
+
+        pub fn win_with_cards(self, seat: u8, value: f64, cards: &[&str]) -> Self {
+            let cs: Vec<serde_json::Value> =
+                cards.iter().map(|s| serde_json::Value::String(s.to_string())).collect();
+            self.event(serde_json::json!({"type": 10, "seat": seat, "value": value, "cards": cs}))
+        }
+
+        pub fn show(self, seat: u8, cards: &[&str]) -> Self {
+            let cs: Vec<serde_json::Value> =
+                cards.iter().map(|s| serde_json::Value::String(s.to_string())).collect();
+            self.event(serde_json::json!({"type": 12, "seat": seat, "cards": cs}))
+        }
+
+        pub fn showdown(self) -> Self {
+            self.event(serde_json::json!({"type": 15}))
+        }
+
+        pub fn uncalled_return(self, seat: u8, value: f64) -> Self {
+            self.event(serde_json::json!({"type": 16, "seat": seat, "value": value}))
+        }
+
+        pub fn dead_blind(self, seat: u8, value: f64) -> Self {
+            self.event(serde_json::json!({"type": 6, "seat": seat, "value": value}))
+        }
+
+        pub fn build_json(&self) -> String {
+            let players: Vec<serde_json::Value> = self
+                .players
+                .iter()
+                .map(|(id, seat, name, stack, hand)| {
+                    let mut p = serde_json::json!({
+                        "id": id,
+                        "seat": seat,
+                        "name": name,
+                        "stack": stack,
+                    });
+                    if let Some(h) = hand {
+                        p["hand"] = serde_json::json!(h);
+                    }
+                    p
+                })
+                .collect();
+
+            let hand = serde_json::json!({
+                "id": self.id,
+                "number": self.number.to_string(),
+                "gameType": self.game_type,
+                "smallBlind": self.small_blind,
+                "bigBlind": self.big_blind,
+                "ante": null,
+                "straddleSeat": null,
+                "dealerSeat": self.dealer_seat,
+                "bombPot": self.bomb_pot,
+                "players": players,
+                "events": self.events,
+            });
+
+            serde_json::json!({
+                "generatedAt": "2026-03-11T00:00:00.000Z",
+                "playerId": "test",
+                "gameId": "test_game",
+                "hands": [hand],
+            })
+            .to_string()
+        }
+
+        pub fn build_multi_json(builders: &[&HandBuilder]) -> String {
+            let hands: Vec<serde_json::Value> = builders
+                .iter()
+                .map(|b| {
+                    let players: Vec<serde_json::Value> = b
+                        .players
+                        .iter()
+                        .map(|(id, seat, name, stack, hand)| {
+                            let mut p = serde_json::json!({
+                                "id": id,
+                                "seat": seat,
+                                "name": name,
+                                "stack": stack,
+                            });
+                            if let Some(h) = hand {
+                                p["hand"] = serde_json::json!(h);
+                            }
+                            p
+                        })
+                        .collect();
+
+                    serde_json::json!({
+                        "id": b.id,
+                        "number": b.number.to_string(),
+                        "gameType": b.game_type,
+                        "smallBlind": b.small_blind,
+                        "bigBlind": b.big_blind,
+                        "ante": null,
+                        "straddleSeat": null,
+                        "dealerSeat": b.dealer_seat,
+                        "bombPot": b.bomb_pot,
+                        "players": players,
+                        "events": b.events,
+                    })
+                })
+                .collect();
+
+            serde_json::json!({
+                "generatedAt": "2026-03-11T00:00:00.000Z",
+                "playerId": "test",
+                "gameId": "test_game",
+                "hands": hands,
+            })
+            .to_string()
+        }
+
+        pub fn write_to_tmp(&self) -> tempfile::NamedTempFile {
+            use std::io::Write;
+            let mut f = tempfile::NamedTempFile::new().unwrap();
+            f.write_all(self.build_json().as_bytes()).unwrap();
+            f
+        }
+
+        pub fn write_multi_to_tmp(builders: &[&HandBuilder]) -> tempfile::NamedTempFile {
+            use std::io::Write;
+            let mut f = tempfile::NamedTempFile::new().unwrap();
+            f.write_all(Self::build_multi_json(builders).as_bytes()).unwrap();
+            f
+        }
+    }
+
+    pub fn parse_single_hand(builder: &HandBuilder) -> Option<Hand> {
+        let tmp = builder.write_to_tmp();
+        let path = tmp.path().to_string_lossy().to_string();
+        let data = parse_files(&[path], &HashMap::new()).unwrap();
+        data.hands.into_iter().next()
+    }
+
+    pub fn parse_game_data(builder: &HandBuilder) -> GameData {
+        let tmp = builder.write_to_tmp();
+        let path = tmp.path().to_string_lossy().to_string();
+        parse_files(&[path], &HashMap::new()).unwrap()
+    }
+
+    pub fn parse_multi_game_data(builders: &[&HandBuilder]) -> GameData {
+        let tmp = HandBuilder::write_multi_to_tmp(builders);
+        let path = tmp.path().to_string_lossy().to_string();
+        parse_files(&[path], &HashMap::new()).unwrap()
+    }
+
+    pub fn parse_game_data_with_unify<S: std::hash::BuildHasher>(
+        builder: &HandBuilder,
+        unify: &HashMap<String, String, S>,
+    ) -> GameData {
+        let tmp = builder.write_to_tmp();
+        let path = tmp.path().to_string_lossy().to_string();
+        parse_files(&[path], unify).unwrap()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::*;
+    use test_helpers::*;
+
+    #[test]
+    fn parse_minimal_hand() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .fold(1)
+            .fold(2)
+            .win(3, 1.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        assert_eq!(hand.id, "test_hand");
+        assert_eq!(hand.number, 1);
+        assert_eq!(hand.small_blind, 0.5);
+        assert_eq!(hand.big_blind, 1.0);
+        assert_eq!(hand.players.len(), 3);
+        assert_eq!(hand.winners.len(), 1);
+        assert_eq!(hand.winners[0].amount, 1.5);
+    }
+
+    #[test]
+    fn parse_empty_hands_array() {
+        let json = serde_json::json!({
+            "generatedAt": "2026-03-11",
+            "playerId": "test",
+            "gameId": "test",
+            "hands": [],
+        })
+        .to_string();
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut &tmp, json.as_bytes()).unwrap();
+        let path = tmp.path().to_string_lossy().to_string();
+        let data = parse_files(&[path], &std::collections::HashMap::new()).unwrap();
+        assert!(data.hands.is_empty());
+    }
+
+    #[test]
+    fn filter_omaha_hands() {
+        let b = HandBuilder::new()
+            .game_type("omaha")
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(1, 1.0)
+            .win(1, 1.5);
+
+        assert!(parse_single_hand(&b).is_none());
+    }
+
+    #[test]
+    fn filter_bomb_pots() {
+        let b = HandBuilder::new()
+            .bomb_pot()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(1, 1.0)
+            .win(1, 1.5);
+
+        assert!(parse_single_hand(&b).is_none());
+    }
+
+    #[test]
+    fn filter_run_it_twice() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(1, 1.0)
+            .call(2, 1.0)
+            .check(1)
+            .flop(&["Ah", "Kd", "Qs"])
+            .board_run2(1, &["Jh", "Td", "9s"])
+            .win(1, 2.0);
+
+        assert!(parse_single_hand(&b).is_none());
+    }
+
+    #[test]
+    fn position_assignment_6_players() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .player("p4", 4, "Diana", 100.0)
+            .player("p5", 5, "Eve", 100.0)
+            .player("p6", 6, "Frank", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .fold(4)
+            .fold(5)
+            .fold(6)
+            .fold(1)
+            .win(3, 1.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let pos_map: std::collections::HashMap<u8, Position> =
+            hand.players.iter().map(|p| (p.seat, p.position)).collect();
+        assert_eq!(pos_map[&1], Position::BTN);
+        assert_eq!(pos_map[&2], Position::SB);
+        assert_eq!(pos_map[&3], Position::BB);
+        assert_eq!(pos_map[&4], Position::EP);
+        assert_eq!(pos_map[&5], Position::MP);
+        assert_eq!(pos_map[&6], Position::CO);
+    }
+
+    #[test]
+    fn position_assignment_3_players() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 3, "Bob", 100.0)
+            .player("p3", 7, "Charlie", 100.0)
+            .dealer(3)
+            .sb(7, 0.5)
+            .bb(1, 1.0)
+            .fold(3)
+            .fold(7)
+            .win(1, 1.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let pos_map: std::collections::HashMap<u8, Position> =
+            hand.players.iter().map(|p| (p.seat, p.position)).collect();
+        assert_eq!(pos_map[&3], Position::BTN);
+        assert_eq!(pos_map[&7], Position::SB);
+        assert_eq!(pos_map[&1], Position::BB);
+    }
+
+    #[test]
+    fn position_assignment_2_players() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 5, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(5, 1.0)
+            .fold(1)
+            .win(5, 1.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let pos_map: std::collections::HashMap<u8, Position> =
+            hand.players.iter().map(|p| (p.seat, p.position)).collect();
+        assert_eq!(pos_map[&1], Position::BTN);
+        assert_eq!(pos_map[&5], Position::BB);
+    }
+
+    #[test]
+    fn spurious_fold_removal() {
+        // Seat 2 folds then checks later — spurious fold should be removed
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .fold(2) // spurious fold
+            .call(2, 1.0) // acts after fold — proves fold was spurious
+            .call(1, 1.0)
+            .check(3)
+            .flop(&["Ah", "Kd", "Qs"])
+            .check(2)
+            .check(3)
+            .check(1)
+            .win(1, 3.0);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let preflop = &hand.streets[0];
+        let fold_count =
+            preflop.actions.iter().filter(|a| a.kind == ActionType::Fold && a.seat == 2).count();
+        assert_eq!(fold_count, 0, "spurious fold should be removed");
+    }
+
+    #[test]
+    fn legitimate_fold_kept() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .fold(1) // real fold — no later action
+            .call(2, 1.0)
+            .check(3)
+            .flop(&["Ah", "Kd", "Qs"])
+            .check(2)
+            .check(3)
+            .win(2, 2.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let preflop = &hand.streets[0];
+        let fold_count =
+            preflop.actions.iter().filter(|a| a.kind == ActionType::Fold && a.seat == 1).count();
+        assert_eq!(fold_count, 1, "legitimate fold should be kept");
+    }
+
+    #[test]
+    fn fold_then_show_is_not_spurious() {
+        // Type 12 (show) should NOT trigger spurious fold removal
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .show(1, &["As", "Kd"])
+            .win(2, 1.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let fold_count = hand.streets[0]
+            .actions
+            .iter()
+            .filter(|a| a.kind == ActionType::Fold && a.seat == 1)
+            .count();
+        assert_eq!(fold_count, 1, "fold then show is legitimate");
+    }
+
+    #[test]
+    fn net_profit_simple_win() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .call(1, 1.0)
+            .check(2)
+            .win(1, 2.0);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let profit_p1 = net_profit(&hand, 1);
+        let profit_p2 = net_profit(&hand, 2);
+        assert!((profit_p1 - 1.0).abs() < 0.001);
+        assert!((profit_p2 - (-1.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn net_profit_with_uncalled_return() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .bet(1, 3.0)
+            .fold(2)
+            .uncalled_return(1, 2.0)
+            .win(1, 2.0);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let profit = net_profit(&hand, 1);
+        // invested 3.0 (max bet on preflop), won 2.0, returned 2.0 → net = +1.0
+        assert!((profit - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn net_profit_with_antes() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .ante(1, 0.25)
+            .ante(2, 0.25)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .win(2, 2.0);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let profit_p1 = net_profit(&hand, 1);
+        // invested: ante 0.25 + sb 0.5 = 0.75, won 0, returned 0 → -0.75
+        assert!((profit_p1 - (-0.75)).abs() < 0.001);
+    }
+
+    #[test]
+    fn is_monetary_classification() {
+        assert!(is_monetary(ActionType::SmallBlind));
+        assert!(is_monetary(ActionType::BigBlind));
+        assert!(is_monetary(ActionType::Ante));
+        assert!(is_monetary(ActionType::Straddle));
+        assert!(is_monetary(ActionType::DeadBlind));
+        assert!(is_monetary(ActionType::Call));
+        assert!(is_monetary(ActionType::Bet));
+        assert!(!is_monetary(ActionType::Fold));
+        assert!(!is_monetary(ActionType::Check));
+    }
+
+    #[test]
+    fn real_showdown_requires_two_shows() {
+        let b_one_show = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .call(1, 1.0)
+            .check(2)
+            .flop(&["Ah", "Kd", "Qs"])
+            .check(1)
+            .check(2)
+            .showdown()
+            .show(1, &["Ts", "9s"])
+            .win(1, 2.0);
+
+        let hand = parse_single_hand(&b_one_show).unwrap();
+        assert!(!hand.real_showdown);
+
+        let b_two_shows = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .call(1, 1.0)
+            .check(2)
+            .flop(&["Ah", "Kd", "Qs"])
+            .check(1)
+            .check(2)
+            .showdown()
+            .show(1, &["Ts", "9s"])
+            .show(2, &["8s", "7s"])
+            .win(1, 2.0);
+
+        let hand = parse_single_hand(&b_two_shows).unwrap();
+        assert!(hand.real_showdown);
+    }
+
+    #[test]
+    fn shown_cards_populated() {
+        let b = HandBuilder::new()
+            .player_with_hand("p1", 1, "Alice", 100.0, &["As", "Kd"])
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .show(2, &["Qh", "Js"])
+            .win(2, 1.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        assert!(hand.shown_cards.contains_key(&1));
+        assert!(hand.shown_cards.contains_key(&2));
+        let p1_cards = &hand.shown_cards[&1];
+        assert_eq!(p1_cards.len(), 2);
+    }
+
+    #[test]
+    fn hole_cards_from_show_event() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .call(1, 1.0)
+            .check(2)
+            .showdown()
+            .show(1, &["As", "Kd"])
+            .show(2, &["Qh", "Js"])
+            .win(1, 2.0);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let p1 = hand.players.iter().find(|p| p.seat == 1).unwrap();
+        assert!(p1.hole_cards.is_some());
+        assert_eq!(p1.hole_cards.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn streets_parsed_correctly() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .call(1, 1.0)
+            .check(2)
+            .flop(&["Ah", "Kd", "Qs"])
+            .check(1)
+            .check(2)
+            .turn("Js")
+            .check(1)
+            .check(2)
+            .river("Ts")
+            .check(1)
+            .check(2)
+            .win(1, 2.0);
+
+        let hand = parse_single_hand(&b).unwrap();
+        assert_eq!(hand.streets.len(), 4);
+        assert_eq!(hand.streets[0].street, Street::Preflop);
+        assert_eq!(hand.streets[1].street, Street::Flop);
+        assert_eq!(hand.streets[1].new_cards.len(), 3);
+        assert_eq!(hand.streets[2].street, Street::Turn);
+        assert_eq!(hand.streets[2].new_cards.len(), 1);
+        assert_eq!(hand.streets[3].street, Street::River);
+        assert_eq!(hand.streets[3].new_cards.len(), 1);
+    }
+
+    #[test]
+    fn single_player_hand() {
+        let b = HandBuilder::new().player("p1", 1, "Alice", 100.0).dealer(1).win(1, 0.0);
+
+        let hand = parse_single_hand(&b).unwrap();
+        assert_eq!(hand.players.len(), 1);
+        assert_eq!(hand.players[0].position, Position::BTN);
+    }
+
+    #[test]
+    fn all_in_flag_parsed() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .bet_all_in(1, 100.0)
+            .call_all_in(2, 100.0)
+            .win(1, 200.0);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let preflop = &hand.streets[0];
+        let allin_actions: Vec<_> = preflop.actions.iter().filter(|a| a.all_in).collect();
+        assert_eq!(allin_actions.len(), 2);
+    }
+
+    #[test]
+    fn player_names_tracked() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .win(2, 1.5);
+
+        let data = parse_game_data(&b);
+        assert!(data.player_names.contains_key("p1"));
+        assert!(data.player_names.contains_key("p2"));
+    }
+
+    #[test]
+    fn dead_blind_parsed() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .dead_blind(1, 1.0)
+            .fold(1)
+            .fold(2)
+            .win(3, 2.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let db_action =
+            hand.streets[0].actions.iter().find(|a| a.kind == ActionType::DeadBlind).unwrap();
+        assert_eq!(db_action.seat, 1);
+        assert!((db_action.amount - 1.0).abs() < 0.001);
+    }
 }

@@ -1,18 +1,14 @@
-mod card;
-mod config;
-mod display;
-mod parser;
-mod search;
-mod stats;
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::process;
 
 use clap::{Parser, Subcommand};
 
-use config::Config;
-use search::{SearchFilter, SortField};
+use poker_cli::config::Config;
+use poker_cli::display;
+use poker_cli::parser;
+use poker_cli::search::{self, SearchFilter, SortField};
+use poker_cli::stats;
 
 #[derive(Parser)]
 #[command(name = "poker-cli", about = "PokerNow hand history analyzer")]

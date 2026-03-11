@@ -6,15 +6,13 @@ PokerNow hand history analyzer. Rust CLI that parses JSON exports from [pokernow
 
 ```bash
 cargo build --release
+cargo test              # 137 tests (125 unit + 12 integration)
 cargo clippy            # pedantic lints enabled — must be warning-free
 cargo fmt -- --check    # must pass
+cargo llvm-cov --summary-only  # coverage report (~92% line coverage)
 ```
 
-No test suite yet — validate against real data:
-```bash
-./target/release/poker-cli stats ~/dev/pokernow/hands/2026-03-11.json
-./target/release/poker-cli hand 43 ~/dev/pokernow/hands/2026-03-11.json
-```
+Integration tests require real data at `~/dev/pokernow/hands/`.
 
 ## Architecture
 

@@ -781,3 +781,339 @@ pub fn print_stats(stats: &[PlayerStats]) {
         println!();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::test_helpers::*;
+
+    fn stats_for(data: &crate::parser::GameData, id: &str) -> PlayerStats {
+        let all = compute_stats(data);
+        all.into_iter().find(|s| s.player_id == id).unwrap()
+    }
+
+    // --- VPIP / PFR ---
+
+    #[test]
+    fn vpip_counts_call_and_raise() {
+        // Hand 1: p1 raises, p2 calls, p3 folds
+        let h1 = HandBuilder::new()
+            .number(1)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0)
+            .call(2, 3.0)
+            .fold(3)
+            .win(1, 6.5);
+
+        // Hand 2: p1 folds, p2 folds, p3 wins
+        let h2 = HandBuilder::new()
+            .number(2)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(2)
+            .sb(3, 0.5)
+            .bb(1, 1.0)
+            .fold(2)
+            .fold(3)
+            .win(1, 1.5);
+
+        let data = parse_multi_game_data(&[&h1, &h2]);
+
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(s1.hands_played, 2);
+        assert_eq!(s1.vpip_hands, 1); // raised in hand 1
+        assert_eq!(s1.pfr_hands, 1);
+
+        let s2 = stats_for(&data, "p2");
+        assert_eq!(s2.vpip_hands, 1); // called in hand 1
+        assert_eq!(s2.pfr_hands, 0); // never raised
+
+        let s3 = stats_for(&data, "p3");
+        assert_eq!(s3.vpip_hands, 0); // folded both hands
+    }
+
+    #[test]
+    fn dead_blind_not_vpip() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .dead_blind(1, 1.0)
+            .fold(1)
+            .fold(2)
+            .win(3, 2.5);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(s1.vpip_hands, 0);
+    }
+
+    // --- 3-Bet ---
+
+    #[test]
+    fn three_bet_tracking() {
+        // p1 opens, p2 3-bets, p1 folds
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0)
+            .bet(2, 9.0)
+            .fold(3)
+            .fold(1)
+            .win(2, 13.0);
+
+        let data = parse_game_data(&b);
+        let s2 = stats_for(&data, "p2");
+        assert_eq!(s2.three_bets, 1);
+        assert!(s2.three_bet_opp >= 1);
+
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(s1.fold_to_three_bets, 1);
+        assert_eq!(s1.fold_to_three_bet_opp, 1);
+    }
+
+    // --- C-Bet ---
+
+    #[test]
+    fn cbet_tracking() {
+        // p1 raises preflop, then bets flop (c-bet)
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0)
+            .call(2, 3.0)
+            .fold(3)
+            .flop(&["Ah", "Kd", "Qs"])
+            .bet(1, 4.0) // c-bet
+            .fold(2)
+            .win(1, 10.0);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(s1.cbets, 1);
+        assert_eq!(s1.cbet_opp, 1);
+
+        let s2 = stats_for(&data, "p2");
+        assert_eq!(s2.fold_to_cbets, 1);
+        assert_eq!(s2.fold_to_cbet_opp, 1);
+    }
+
+    // --- Aggression factor ---
+
+    #[test]
+    fn aggression_factor_postflop() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .call(1, 1.0)
+            .check(2)
+            .flop(&["Ah", "Kd", "Qs"])
+            .bet(1, 2.0) // postflop bet
+            .call(2, 2.0) // postflop call
+            .turn("Js")
+            .bet(1, 4.0)
+            .call(2, 4.0)
+            .win(1, 14.0);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(s1.postflop_bets, 2);
+        assert_eq!(s1.postflop_calls, 0);
+        // AF = 2/0 = inf
+
+        let s2 = stats_for(&data, "p2");
+        assert_eq!(s2.postflop_bets, 0);
+        assert_eq!(s2.postflop_calls, 2);
+    }
+
+    // --- WTSD / W$SD ---
+
+    #[test]
+    fn wtsd_and_wsd() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .call(1, 1.0)
+            .check(2)
+            .flop(&["Ah", "Kd", "Qs"])
+            .check(1)
+            .check(2)
+            .turn("Js")
+            .check(1)
+            .check(2)
+            .river("Ts")
+            .check(1)
+            .check(2)
+            .showdown()
+            .show(1, &["9s", "8s"])
+            .show(2, &["7s", "6s"])
+            .win(1, 2.0);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(s1.saw_flop, 1);
+        assert_eq!(s1.went_to_showdown, 1);
+        assert_eq!(s1.won_at_showdown, 1);
+
+        let s2 = stats_for(&data, "p2");
+        assert_eq!(s2.saw_flop, 1);
+        assert_eq!(s2.went_to_showdown, 1);
+        assert_eq!(s2.won_at_showdown, 0);
+    }
+
+    // --- Positional stats ---
+
+    #[test]
+    fn positional_vpip_pfr() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1) // p1=BTN, p2=SB, p3=BB
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0) // BTN raise
+            .fold(2)
+            .fold(3)
+            .win(1, 4.5);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        // BTN = index 3
+        assert_eq!(s1.pos_vpip[3], 1);
+        assert_eq!(s1.pos_pfr[3], 1);
+        assert_eq!(s1.pos_hands[3], 1);
+        // Other positions should be 0
+        assert_eq!(s1.pos_hands[0], 0);
+    }
+
+    // --- Net P&L ---
+
+    #[test]
+    fn net_pnl_in_bb() {
+        let b = HandBuilder::new()
+            .blinds(0.5, 1.0)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .call(1, 1.0)
+            .check(2)
+            .win(1, 2.0);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        // won 2.0 - invested 1.0 = net +1.0, in BB = +1.0
+        assert!((s1.net_bb - 1.0).abs() < 0.001);
+
+        let s2 = stats_for(&data, "p2");
+        assert!((s2.net_bb - (-1.0)).abs() < 0.001);
+    }
+
+    // --- Limp tracking ---
+
+    #[test]
+    fn limp_counted() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .call(1, 1.0) // limp
+            .call(2, 1.0) // complete from SB, still a limp
+            .check(3)
+            .win(3, 3.0);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(s1.limps, 1);
+    }
+
+    // --- Open raise ---
+
+    #[test]
+    fn open_raise_counted() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0) // open raise
+            .fold(2)
+            .fold(3)
+            .win(1, 4.5);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(s1.open_raises, 1);
+    }
+
+    // --- fmt helpers ---
+
+    #[test]
+    fn fmt_pct_works() {
+        assert_eq!(fmt_pct(1, 2), "50.0%");
+        assert_eq!(fmt_pct(0, 0), "-");
+        assert_eq!(fmt_pct(3, 3), "100.0%");
+    }
+
+    #[test]
+    fn fmt_af_works() {
+        assert_eq!(fmt_af(0, 0), "-");
+        assert_eq!(fmt_af(5, 0), "inf");
+        assert_eq!(fmt_af(6, 3), "2.00");
+    }
+
+    #[test]
+    fn fmt_bb_works() {
+        assert_eq!(fmt_bb(10.5), "+10.5");
+        assert_eq!(fmt_bb(-3.2), "-3.2");
+        assert_eq!(fmt_bb(0.0), "+0.0");
+    }
+
+    // --- print_stats doesn't panic ---
+
+    #[test]
+    fn print_stats_no_panic() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .win(2, 1.5);
+
+        let data = parse_game_data(&b);
+        let stats = compute_stats(&data);
+        print_stats(&stats);
+    }
+}

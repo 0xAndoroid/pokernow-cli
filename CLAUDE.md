@@ -12,7 +12,7 @@ cargo fmt -- --check    # must pass
 cargo llvm-cov --summary-only  # coverage report (~92% line coverage)
 ```
 
-Integration tests require real data at `~/dev/pokernow/hands/`.
+Integration tests use fixture data in `tests/fixtures/` (no external data needed).
 
 ## Architecture
 

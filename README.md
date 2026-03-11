@@ -2,6 +2,8 @@
 
 Fast CLI for analyzing [PokerNow](https://www.pokernow.club/) hand history JSON exports. Computes HUD-style stats, replays individual hands with made-hand descriptions, and searches/filters hands by criteria.
 
+Only standard Texas Hold'em hands are processed. Omaha, bomb pots, and double board / run-it-twice hands are silently filtered out.
+
 ## Build
 
 ```
@@ -11,8 +13,6 @@ cargo build --release
 Requires Rust 2024 edition (1.85+).
 
 ## Usage
-
-All commands take one or more PokerNow JSON hand history files as trailing arguments.
 
 ### Stats
 
@@ -30,11 +30,10 @@ Display a single hand with board, actions, and made-hand descriptions:
 
 ```
 poker-cli hand <hand-id> session.json
+poker-cli hand 43 session.json
 ```
 
-Hand IDs are the opaque strings from the PokerNow JSON (e.g. `nyamg3i3yuit`). If you don't know the ID, the error message lists all available IDs.
-
-Hold'em hands show contextual descriptions (top pair, overpair, set, flush draw, etc.). Omaha hands use standard hand names via proper 2+3 evaluation.
+Accepts either a PokerNow hash ID (e.g. `nyamg3i3yuit`) or a sequential number (1-based index into loaded hands).
 
 ### Search
 
@@ -54,7 +53,7 @@ Flags:
 
 ### Player unification
 
-Merge multiple PokerNow player identities into one (e.g. same person with different accounts):
+Merge multiple PokerNow player identities into one:
 
 ```
 poker-cli --unify-players "Andrew,aryan;Steve,steveooooo" stats session.json
@@ -62,27 +61,44 @@ poker-cli --unify-players "Andrew,aryan;Steve,steveooooo" stats session.json
 
 The first name in each group becomes the canonical identity. Semicolons separate groups.
 
+## Config file
+
+Create `config.toml` in the working directory to set defaults:
+
+```toml
+# Default files when none given on CLI (supports ~ expansion)
+files = [
+  "~/dev/pokernow/hands/2026-03-11.json",
+  "~/dev/pokernow/hands/2026-03-10.json",
+]
+
+# Player unification (same as --unify-players but persistent)
+[unify]
+pranav = ["pranav", "pranavv"]
+andrew = ["Andrew", "aryan"]
+```
+
+CLI arguments override config values. If files are given on the command line, `config.toml` files are ignored. If `--unify-players` is passed, the config `[unify]` section is ignored.
+
 ## Architecture
 
 ```
 src/
-  main.rs     CLI entry point (clap)
+  main.rs     CLI entry point (clap), config loading, file resolution
+  config.rs   config.toml parsing, tilde expansion
   parser.rs   JSON deserialization, event processing, position assignment
-  card.rs     Card representation, 5-card hand evaluation, Omaha evaluation, hand descriptions
+  card.rs     Card representation, 5-card hand evaluation, hand descriptions
   stats.rs    HUD stat computation (VPIP, PFR, 3-bet, C-bet, AF, WTSD, EV)
   display.rs  Hand replay formatting
   search.rs   Hand filtering and search output
 ```
 
-### Key design decisions
+## Known limitations
 
-- **Chip amounts are `f64`** — PokerNow uses float values natively; no cent conversion needed for play-money games.
-- **Hand evaluation is brute-force C(n,5)** — fast enough for 7-card Hold'em and 9-card Omaha; no lookup tables needed.
-- **Omaha uses strict 2+3 rule** — `evaluate_omaha` enumerates C(4,2) x C(board,3) combinations.
-- **Antes summed separately in net profit** — antes are additive on top of blind/bet amounts, which use per-street max tracking.
-- **Spurious fold filtering** — PokerNow emits phantom fold events; these are detected by checking for later actions (check/call/bet/win) by the same seat, excluding SHOW events (a player can fold then show cards).
-- **Showdown detection** — type 15 fires every hand; real showdowns require 2+ type 12 SHOW events.
+- Only Texas Hold'em hands are supported
+- Omaha, bomb pots, and double board / run-it-twice are filtered out (future work)
+- No automated test suite — validate against real PokerNow exports
 
 ## Input format
 
-See [POKERNOW.md](POKERNOW.md) for the complete PokerNow JSON hand history format reference.
+See [CLAUDE.md](CLAUDE.md) for the complete PokerNow JSON format reference.

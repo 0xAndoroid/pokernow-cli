@@ -13,15 +13,18 @@ cargo fmt -- --check    # must pass
 No test suite yet — validate against real data:
 ```bash
 ./target/release/poker-cli stats ~/dev/pokernow/hands/2026-03-11.json
-./target/release/poker-cli hand <id> ~/dev/pokernow/hands/2026-03-11.json
+./target/release/poker-cli hand 43 ~/dev/pokernow/hands/2026-03-11.json
 ```
 
 ## Architecture
 
 ```
 src/main.rs      CLI (clap). Parses args, dispatches to stats/display/search.
+                 Config loading, file resolution, hand numbering.
+src/config.rs    config.toml parsing (files, player unification). Tilde expansion.
 src/parser.rs    JSON deserialization → Hand/Action/Winner structs. Position assignment.
                  Spurious fold filtering. Net profit calculation. is_monetary() lives here.
+                 Filters: only Hold'em, no bomb pots, no double board / run-it-twice.
 src/card.rs      Card(u8) packed repr. 5-card evaluator (brute-force C(n,5)).
                  evaluate() for Hold'em, evaluate_omaha() for Omaha (2+3 rule).
                  holding_description() — contextual hand descriptions with draw detection.
@@ -30,20 +33,44 @@ src/display.rs   Hand replay output. Uses parser::is_monetary (no duplicate).
 src/search.rs    Hand filtering by player/pot/street/showdown.
 ```
 
+## Config file
+
+`config.toml` in the working directory. CLI args override config values.
+
+```toml
+files = [
+  "~/dev/pokernow/hands/2026-03-11.json",
+  "~/dev/pokernow/hands/2026-03-10.json",
+]
+
+[unify]
+pranav = ["pranav", "pranavv"]
+andrew = ["Andrew", "aryan"]
+```
+
+- `files`: default hand history files when none given on CLI. Supports `~` expansion.
+- `[unify]`: player unification. Key = canonical name, value = list of aliases.
+
 ## Key conventions
 
 - `Action.kind` not `action_type` (clippy struct_field_names)
 - Chip amounts are `f64` (PokerNow native format)
-- Card = packed `u8`: `(rank << 2) | suit`. Rank 2-14, suit 0-3
+- Card = packed `u8`: `(rank * 4) + suit`. Rank 2-14, suit 0-3
 - Stat opportunity fields use `_opp` suffix (e.g. `three_bet_opp`, `cbet_opp`)
 - Position enum: `EP, MP, CO, BTN, SB, BB` (uppercase, allowed via clippy)
 - No `unwrap()` on user data — use `let...else`, `map_or`, `unwrap_or`
+
+## Known limitations
+
+- **Omaha hands filtered out** — only Texas Hold'em (`gameType: "th"`) is processed
+- **Bomb pots filtered out** — `bombPot: true` hands are skipped
+- **Double board / run-it-twice filtered out** — hands with `run > 1` board events are skipped
+- These formats are future work
 
 ## Gotchas
 
 - **Antes are additive**: In `net_profit()`, antes sum separately from blind/bet maxes per street
 - **Spurious folds**: ~55% of PokerNow hands have phantom fold events. `remove_spurious_folds()` detects seats that fold then act later (check/call/bet/win), but NOT show (type 12) — folding then showing is legitimate
-- **Omaha detection**: Inferred from hole card count (>2), not a stored game_type field
 - **Partial hole cards**: Some SHOW events have `None` values or single cards — `holding_description` guards against <2 cards
 - **Type 15 SHOWDOWN fires every hand**: Real showdown requires 2+ type 12 SHOW events (`real_showdown` field)
 - **Bet values are cumulative per street**: Type 8 value=10 means 10 total on that street, not 10 on top of previous bet

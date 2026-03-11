@@ -1,14 +1,17 @@
 mod card;
+mod config;
 mod display;
 mod parser;
 mod search;
 mod stats;
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::process;
 
 use clap::{Parser, Subcommand};
 
+use config::Config;
 use search::{SearchFilter, SortField};
 
 #[derive(Parser)]
@@ -25,7 +28,6 @@ struct Cli {
 #[derive(clap::Args)]
 struct FileArgs {
     /// Hand history JSON files
-    #[arg(required = true)]
     files: Vec<String>,
 }
 
@@ -38,7 +40,7 @@ enum Command {
     },
     /// Display a specific hand
     Hand {
-        /// Hand ID to display
+        /// Hand ID or sequential number (1, 2, 3...)
         id: String,
         #[command(flatten)]
         files: FileArgs,
@@ -96,10 +98,43 @@ enum CliAction {
     Search(SearchFilter),
 }
 
+fn resolve_files_and_unify(
+    cli_files: Vec<String>,
+    cli_unify: Option<String>,
+) -> (Vec<String>, HashMap<String, String>) {
+    let config = load_config();
+
+    let files = if cli_files.is_empty() {
+        config.as_ref().map_or_else(Vec::new, Config::expanded_files)
+    } else {
+        cli_files
+    };
+
+    let unify = if let Some(spec) = cli_unify {
+        build_unify_map(&spec)
+    } else {
+        config.as_ref().map_or_else(HashMap::new, Config::unify_map)
+    };
+
+    (files, unify)
+}
+
+fn load_config() -> Option<Config> {
+    let path = Path::new("config.toml");
+    if !path.exists() {
+        return None;
+    }
+    match Config::load(path) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            eprintln!("Warning: failed to parse config.toml: {e}");
+            None
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
-
-    let unify_map = cli.unify_players.as_deref().map(build_unify_map).unwrap_or_default();
 
     let (files, action) = match cli.command {
         Command::Stats { files } => (files.files, CliAction::Stats),
@@ -135,6 +170,17 @@ fn main() {
         }
     };
 
+    let (files, unify_map) = resolve_files_and_unify(files, cli.unify_players);
+
+    if files.is_empty() {
+        eprintln!("Error: no hand history files specified.\n");
+        eprintln!("Provide files as arguments:");
+        eprintln!("  poker-cli stats game1.json game2.json\n");
+        eprintln!("Or create a config.toml in the current directory:");
+        eprintln!("  files = [\"~/dev/pokernow/hands/session.json\"]");
+        process::exit(1);
+    }
+
     let data = match parser::parse_files(&files, &unify_map) {
         Ok(d) => d,
         Err(e) => {
@@ -149,12 +195,17 @@ fn main() {
             stats::print_stats(&result);
         }
         CliAction::Hand(id) => {
-            if let Some(h) = data.hands.iter().find(|h| h.id == id) {
+            let hand = if let Ok(n) = id.parse::<usize>() {
+                if n == 0 { None } else { data.hands.get(n - 1) }
+            } else {
+                data.hands.iter().find(|h| h.id == id)
+            };
+
+            if let Some(h) = hand {
                 display::display_hand(h);
             } else {
                 eprintln!("Hand '{id}' not found");
-                let ids: Vec<&str> = data.hands.iter().map(|h| h.id.as_str()).collect();
-                eprintln!("Available hand IDs: {}", ids.join(", "));
+                eprintln!("Available: hands 1-{} (or use hash ID)", data.hands.len());
                 process::exit(1);
             }
         }

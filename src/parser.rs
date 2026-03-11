@@ -218,9 +218,16 @@ fn build_id_unify_map(
 }
 
 fn process_hand(raw: &RawHand, id_unify: &HashMap<String, String>) -> Option<Hand> {
-    match raw.game_type.as_str() {
-        "th" | "omaha" => {}
-        _ => return None,
+    // Only standard Texas Hold'em. Omaha, bomb pots, and double board / run-it-twice
+    // are intentionally excluded — these formats are future work.
+    if raw.game_type != "th" {
+        return None;
+    }
+    if raw.bomb_pot {
+        return None;
+    }
+    if has_multiple_runs(&raw.events) {
+        return None;
     }
 
     let number: u32 = raw.number.parse().unwrap_or(0);
@@ -279,6 +286,10 @@ fn process_hand(raw: &RawHand, id_unify: &HashMap<String, String>) -> Option<Han
         shown_cards,
         uncalled_returns,
     })
+}
+
+fn has_multiple_runs(events: &[RawEvent]) -> bool {
+    events.iter().any(|ev| ev.payload.event_type == 9 && ev.payload.run.unwrap_or(1) > 1)
 }
 
 fn assign_positions(seats_sorted: &[u8], dealer_seat: u8) -> HashMap<u8, Position> {

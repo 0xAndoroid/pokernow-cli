@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::card::{self, Card};
-use crate::parser::{ActionType, Hand, Position, Street, is_monetary};
+use crate::parser::{ActionType, Hand, Position, Street};
 
 const POSITION_ORDER: [Position; 6] =
     [Position::BTN, Position::SB, Position::BB, Position::EP, Position::MP, Position::CO];
@@ -18,7 +18,6 @@ pub fn display_hand(hand: &Hand) {
     let mut running_pot = 0.0;
 
     for (street_idx, sd) in hand.streets.iter().enumerate() {
-        let street_pot = compute_street_pot(hand, street_idx);
         print_street_header(sd.street, &sd.new_cards, &board, running_pot);
 
         if sd.street != Street::Preflop {
@@ -30,8 +29,7 @@ pub fn display_hand(hand: &Hand) {
             print_made_hands(&hole_cards, &board, &seat_name, &folded);
         }
 
-        print_actions(&sd.actions, &seat_name, sd.street);
-        running_pot += street_pot;
+        running_pot = print_actions(&sd.actions, &seat_name, running_pot);
     }
 
     print_results(hand, &seat_name);
@@ -92,20 +90,6 @@ fn print_players(hand: &Hand, hole_cards: &HashMap<u8, Vec<Card>>, bb: f64) {
     }
 
     println!();
-}
-
-fn compute_street_pot(hand: &Hand, street_idx: usize) -> f64 {
-    let sd = &hand.streets[street_idx];
-    let mut per_player: HashMap<u8, f64> = HashMap::new();
-    for a in &sd.actions {
-        if is_monetary(a.kind) {
-            let entry = per_player.entry(a.seat).or_insert(0.0);
-            if a.amount > *entry {
-                *entry = a.amount;
-            }
-        }
-    }
-    per_player.values().sum()
 }
 
 fn print_street_header(street: Street, new_cards: &[Card], board: &[Card], pot: f64) {
@@ -170,41 +154,79 @@ fn print_made_hands(
 fn print_actions(
     actions: &[crate::parser::Action],
     seat_name: &HashMap<u8, String>,
-    street: Street,
-) {
-    let mut had_bet = street == Street::Preflop;
+    pot_before_street: f64,
+) -> f64 {
+    let mut pot = pot_before_street;
+    let mut current_bet: f64 = 0.0;
+    let mut per_seat: HashMap<u8, f64> = HashMap::new();
 
     for a in actions {
         let name = seat_name.get(&a.seat).map_or("?", String::as_str);
         let all_in_tag = if a.all_in { " (all-in)" } else { "" };
+        let seat_invested = *per_seat.get(&a.seat).unwrap_or(&0.0);
 
         let line = match a.kind {
             ActionType::SmallBlind => {
+                pot += a.amount - seat_invested;
+                per_seat.insert(a.seat, a.amount);
+                current_bet = current_bet.max(a.amount);
                 format!("  {} posts small blind {}", name, format_chips(a.amount))
             }
             ActionType::BigBlind => {
+                pot += a.amount - seat_invested;
+                per_seat.insert(a.seat, a.amount);
+                current_bet = current_bet.max(a.amount);
                 format!("  {} posts big blind {}", name, format_chips(a.amount))
             }
-            ActionType::Ante => format!("  {} antes {}", name, format_chips(a.amount)),
-            ActionType::Straddle => format!("  {} straddles {}", name, format_chips(a.amount)),
+            ActionType::Ante => {
+                pot += a.amount;
+                format!("  {} antes {}", name, format_chips(a.amount))
+            }
+            ActionType::Straddle => {
+                pot += a.amount - seat_invested;
+                per_seat.insert(a.seat, a.amount);
+                current_bet = current_bet.max(a.amount);
+                format!("  {} straddles {}", name, format_chips(a.amount))
+            }
             ActionType::DeadBlind => {
+                pot += a.amount;
                 format!("  {} posts dead blind {}", name, format_chips(a.amount))
             }
             ActionType::Fold => format!("  {name} folds"),
             ActionType::Check => format!("  {name} checks"),
             ActionType::Call => {
-                format!("  {} calls {}{}", name, format_chips(a.amount), all_in_tag,)
+                pot += a.amount - seat_invested;
+                per_seat.insert(a.seat, a.amount);
+                format!("  {} calls {}{}", name, format_chips(a.amount), all_in_tag)
             }
             ActionType::Bet => {
-                let verb = if had_bet { "raises to" } else { "bets" };
-                had_bet = true;
-                format!("  {} {} {}{}", name, verb, format_chips(a.amount), all_in_tag,)
+                let is_raise = current_bet > 0.0;
+                let sizing = if is_raise {
+                    let call_amount = current_bet - seat_invested;
+                    let increment = a.amount - current_bet;
+                    let denominator = pot + call_amount;
+                    if denominator > 0.0 {
+                        format!(" ({}% pot)", (increment / denominator * 100.0).round() as i64)
+                    } else {
+                        String::new()
+                    }
+                } else if pot > 0.0 {
+                    format!(" ({}% pot)", (a.amount / pot * 100.0).round() as i64)
+                } else {
+                    String::new()
+                };
+                let verb = if is_raise { "raises to" } else { "bets" };
+                pot += a.amount - seat_invested;
+                per_seat.insert(a.seat, a.amount);
+                current_bet = a.amount;
+                format!("  {} {} {}{}{}", name, verb, format_chips(a.amount), sizing, all_in_tag)
             }
         };
         println!("{line}");
     }
 
     println!();
+    pot
 }
 
 fn print_results(hand: &Hand, seat_name: &HashMap<u8, String>) {

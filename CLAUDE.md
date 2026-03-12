@@ -17,8 +17,8 @@ Integration tests use fixture data in `tests/fixtures/` (no external data needed
 ## Architecture
 
 ```
-src/main.rs      CLI (clap). Parses args, dispatches to stats/display/search.
-                 Config loading, file resolution, hand numbering.
+src/main.rs      CLI (clap). Parses args, dispatches to stats/display/search/summary.
+                 Config loading, file resolution, --no-config flag.
 src/config.rs    config.toml parsing (files, player unification). Tilde expansion.
 src/parser.rs    JSON deserialization → Hand/Action/Winner structs. Position assignment.
                  Spurious fold filtering. Net profit calculation. is_monetary() lives here.
@@ -28,16 +28,17 @@ src/card.rs      Card(u8) packed repr. 5-card evaluator (brute-force C(n,5)).
                  evaluate() for Hold'em, evaluate_omaha() for Omaha (2+3 rule).
                  holding_description() — contextual hand descriptions with draw detection.
 src/stats.rs     HUD stat computation: VPIP, PFR, 3-bet, C-bet, AF, WTSD, W$SD, WWSF, EV.
+                 Single-player view via print_single_player_stats().
 src/display.rs   Hand replay output. Run-it-twice shows both runs with results.
-                 Per-player net P&L. Effective stacks in header.
+                 Per-player net P&L. Effective stacks in header. Hand hash ID in header.
 src/search.rs    Hand filtering by player/pot/street/showdown/won/lost.
-                 Player-aware showdown filter. Player net column.
+                 Player-aware showdown filter. Player net column. Hand ID in output.
 src/summary.rs   Compact session summary: hand count, P&L table, biggest pot.
 ```
 
 ## Config file
 
-`config.toml` in the working directory. CLI args override config values.
+`config.toml` in the working directory. CLI args override config values. Use `--no-config` to disable loading.
 
 ```toml
 files = [
@@ -52,6 +53,8 @@ andrew = ["Andrew", "aryan"]
 
 - `files`: default hand history files when none given on CLI. Supports `~` expansion.
 - `[unify]`: player unification. Key = canonical name, value = list of aliases.
+
+When config is loaded, prints "Loaded N file(s) from config.toml" to stderr.
 
 ## Key conventions
 
@@ -68,6 +71,7 @@ andrew = ["Andrew", "aryan"]
 - **Bomb pots filtered out** — `bombPot: true` hands are skipped
 - **Double-board games filtered out** — hands with `run > 1` boards but no type 14 (RIT vote)
 - **Run-it-twice supported** — first run's board used for eval/stats; display shows both runs
+- **`hand` numeric lookup** — matches `hand.number` (JSON number field) first, falls back to array index
 
 ## Gotchas
 
@@ -76,6 +80,8 @@ andrew = ["Andrew", "aryan"]
 - **Partial hole cards**: Some SHOW events have `None` values or single cards — `holding_description` guards against <2 cards
 - **Type 15 SHOWDOWN fires every hand**: Real showdown requires 2+ type 12 SHOW events (`real_showdown` field)
 - **Bet values are cumulative per street**: Type 8 value=10 means 10 total on that street, not 10 on top of previous bet
+- **`--showdown` is player-aware**: When combined with `--player`, only returns hands where that player went to showdown (checked via shown_cards or winner cards), not hands where they folded and others showed down
+- **`--player` filter uses `player_in_hand`**: Matches any hand where the player was dealt in (not just VPIP'd)
 
 ---
 
@@ -173,3 +179,4 @@ net = won + uncalled_return - invested
 - **AF**: postflop bets / postflop calls
 - **WTSD**: went to showdown / saw flop
 - **W$SD**: won at showdown / went to showdown
+- **WWSF**: won when saw flop (won pot / saw flop, regardless of showdown)

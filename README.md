@@ -8,18 +8,12 @@ Only standard Texas Hold'em hands are processed. Omaha, bomb pots, and double-bo
 
 Requires Rust 1.85+ (2024 edition).
 
+Install from source:
+
 ```bash
 git clone https://github.com/andoroid/poker-cli.git
 cd poker-cli
-cargo build --release
-```
-
-The binary is at `./target/release/poker-cli`. Add it to your PATH:
-
-```bash
-cp target/release/poker-cli ~/.local/bin/
-# or symlink
-ln -s "$(pwd)/target/release/poker-cli" ~/.local/bin/poker-cli
+cargo install --path ./
 ```
 
 ### Getting hand histories

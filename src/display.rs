@@ -32,7 +32,11 @@ pub fn display_hand(hand: &Hand) {
         running_pot = print_actions(&sd.actions, &seat_name, running_pot);
     }
 
-    print_results(hand, &seat_name);
+    if hand.run_it_twice {
+        print_run_it_twice(hand, &seat_name, &hole_cards, &board);
+    } else {
+        print_results(hand, &seat_name);
+    }
 }
 
 fn build_seat_name_map(hand: &Hand) -> HashMap<u8, String> {
@@ -229,6 +233,69 @@ fn print_actions(
     pot
 }
 
+fn build_run2_board(hand: &Hand, run1_board: &[Card]) -> Vec<Card> {
+    let run1_streets: Vec<(Street, &[Card])> = hand
+        .streets
+        .iter()
+        .filter(|sd| sd.street != Street::Preflop && !sd.new_cards.is_empty())
+        .map(|sd| (sd.street, sd.new_cards.as_slice()))
+        .collect();
+
+    let mut board = Vec::new();
+    for &(street, run1_cards) in &run1_streets {
+        if let Some((_, r2)) = hand.run2_cards.iter().find(|(s, _)| *s == street) {
+            board.extend_from_slice(r2);
+        } else {
+            board.extend_from_slice(run1_cards);
+        }
+    }
+
+    if board.is_empty() { run1_board.to_vec() } else { board }
+}
+
+fn print_run_it_twice(
+    hand: &Hand,
+    seat_name: &HashMap<u8, String>,
+    hole_cards: &HashMap<u8, Vec<Card>>,
+    run1_board: &[Card],
+) {
+    println!("--- RUN IT TWICE ---");
+    println!();
+
+    let run1_winners: Vec<_> = hand.winners.iter().filter(|w| w.run == 1).collect();
+    let run2_winners: Vec<_> = hand.winners.iter().filter(|w| w.run == 2).collect();
+    let run2_board = build_run2_board(hand, run1_board);
+
+    println!("Run 1: [{}]", format_cards(run1_board));
+    for (&seat, cards) in hole_cards {
+        let name = seat_name.get(&seat).map_or("?", String::as_str);
+        let desc = card::holding_description(cards, run1_board);
+        println!("  {name}: {desc}");
+    }
+    for w in &run1_winners {
+        let name = seat_name.get(&w.seat).map_or("?", String::as_str);
+        match &w.hand_description {
+            Some(desc) => println!("  {name} wins {} ({desc})", format_chips(w.amount)),
+            None => println!("  {name} wins {}", format_chips(w.amount)),
+        }
+    }
+
+    println!();
+    println!("Run 2: [{}]", format_cards(&run2_board));
+    for (&seat, cards) in hole_cards {
+        let name = seat_name.get(&seat).map_or("?", String::as_str);
+        let desc = card::holding_description(cards, &run2_board);
+        println!("  {name}: {desc}");
+    }
+    for w in &run2_winners {
+        let name = seat_name.get(&w.seat).map_or("?", String::as_str);
+        match &w.hand_description {
+            Some(desc) => println!("  {name} wins {} ({desc})", format_chips(w.amount)),
+            None => println!("  {name} wins {}", format_chips(w.amount)),
+        }
+    }
+}
+
 fn print_results(hand: &Hand, seat_name: &HashMap<u8, String>) {
     if hand.winners.is_empty() {
         return;
@@ -377,6 +444,35 @@ mod tests {
             .fold(1);
 
         let hand = parse_single_hand(&b).unwrap();
+        display_hand(&hand);
+    }
+
+    #[test]
+    fn display_run_it_twice() {
+        let b = HandBuilder::new()
+            .player_with_hand("p1", 1, "Alice", 100.0, &["As", "Kd"])
+            .player_with_hand("p2", 2, "Bob", 50.0, &["Qh", "Qd"])
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .bet_all_in(1, 100.0)
+            .call_all_in(2, 50.0)
+            .uncalled_return(1, 50.0)
+            .rit_vote()
+            .flop(&["Ah", "Kh", "Qs"])
+            .board_run2(1, &["Qc", "Jd", "Ts"])
+            .turn("Js")
+            .board_run2(2, &["9h"])
+            .river("Ts")
+            .board_run2(3, &["8h"])
+            .showdown()
+            .show(1, &["As", "Kd"])
+            .show(2, &["Qh", "Qd"])
+            .win_run(1, 50.0, 1)
+            .win_run(2, 50.0, 2);
+
+        let hand = parse_single_hand(&b).unwrap();
+        assert!(hand.run_it_twice);
         display_hand(&hand);
     }
 

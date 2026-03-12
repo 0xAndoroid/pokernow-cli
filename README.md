@@ -2,15 +2,31 @@
 
 Fast CLI for analyzing [PokerNow](https://www.pokernow.club/) hand history JSON exports. Computes HUD-style stats, replays individual hands with made-hand descriptions, and searches/filters hands by criteria.
 
-Only standard Texas Hold'em hands are processed. Omaha, bomb pots, and double board / run-it-twice hands are silently filtered out.
+Only standard Texas Hold'em hands are processed. Omaha, bomb pots, and double-board game hands are silently filtered out. Run-it-twice hands are fully supported — the first run's board is used for evaluation and stats, while the hand replay displays both runs with their results.
 
-## Build
+## Installation
 
-```
+Requires Rust 1.85+ (2024 edition).
+
+```bash
+git clone https://github.com/andoroid/poker-cli.git
+cd poker-cli
 cargo build --release
 ```
 
-Requires Rust 2024 edition (1.85+).
+The binary is at `./target/release/poker-cli`. Add it to your PATH:
+
+```bash
+cp target/release/poker-cli ~/.local/bin/
+# or symlink
+ln -s "$(pwd)/target/release/poker-cli" ~/.local/bin/poker-cli
+```
+
+### Getting hand histories
+
+1. Go to your [PokerNow](https://www.pokernow.club/) game
+2. Click the hamburger menu (top-right) → **Download Hand History**
+3. Save the JSON file
 
 ## Usage
 
@@ -96,8 +112,9 @@ src/
 ## Known limitations
 
 - Only Texas Hold'em hands are supported
-- Omaha, bomb pots, and double board / run-it-twice are filtered out (future work)
-- No automated test suite — validate against real PokerNow exports
+- Omaha, bomb pots, and double-board games are filtered out
+- Run-it-twice hands are supported (first run for stats, both runs displayed)
+- 139 tests with ~92% line coverage. Run `cargo test` and `cargo llvm-cov`
 
 ## Input format
 

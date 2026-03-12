@@ -6,50 +6,129 @@ allowed-tools:
 ---
 
 ## Context
-- Binary: `./target/release/poker-cli` (build with `cargo build --release` if missing)
-- Hand history files: PokerNow JSON exports, typically at `~/dev/pokernow/hands/*.json`
+
+- **Command:** `poker-cli` (assumed installed and on PATH)
+- **Source:** `~/dev/poker-cli`
+- **Hand files:** `~/dev/pokernow/hands/YYYY-MM-DD.json`
+- **Tests:** 139 tests, ~92% line coverage. `cargo test` / `cargo llvm-cov`
 
 ## Commands
 
-### Player stats
+### stats — Player Statistics
+
 ```bash
-./target/release/poker-cli stats <file1.json> [file2.json ...]
+poker-cli stats [files...]
+poker-cli stats                              # uses config.toml files
+poker-cli stats session1.json session2.json  # explicit files
 ```
-Output: ranked player list with VPIP, PFR, 3-Bet%, Fold-to-3B, C-Bet%, AF, WTSD, W$SD, positional breakdowns, all-in EV diff. Multi-file merges stats across sessions.
 
-### Hand replay
+Per-player output ranked by P&L: VPIP, PFR, 3-Bet%, Fold-to-3B%, Cold Call%, C-Bet%, Fold-to-CB%, AF, WTSD%, W$SD%, All-in EV, positional breakdowns (EP/MP/CO/BTN/SB/BB), net P&L in BB, BB/hand. Multi-file merges stats across sessions.
+
+### hand — Hand Replay
+
 ```bash
-./target/release/poker-cli hand <hand-id> <file.json>
+poker-cli hand <id> [files...]
+poker-cli hand 43 session.json               # by sequential number (1-based)
+poker-cli hand nyamg3i3yuit session.json     # by PokerNow hash ID
 ```
-Shows full hand: players, stacks, positions, street-by-street actions, board cards, made-hand descriptions (top pair, flush draw, set, etc.), and results. Hand IDs are opaque strings from the JSON (e.g. `nyamg3i3yuit`). On invalid ID, all available IDs are listed.
 
-### Search/filter hands
+Street-by-street replay with:
+- Visible hole cards for all shown players
+- Each action with amounts and pot-relative sizing (e.g., "bets 22 (67% pot)")
+- Board cards and running pot
+- Made hand descriptions at each street (e.g., "flush, ace-high", "top pair, queens", "open-ended straight draw")
+- Final result with winner and amount
+
+Accepts sequential hand number (1-based) or PokerNow hash ID. On invalid ID, lists all available IDs.
+
+### search — Hand Search/Filter
+
 ```bash
-./target/release/poker-cli search [flags] <file.json>
+poker-cli search [filters...] [files...]
+poker-cli search --player Andrew --min-pot 100 --showdown session.json
+poker-cli search --saw-flop Andrew --sort pot session.json
 ```
-Flags:
-- `--player <name>` — player VPIP'd in the hand
-- `--saw-flop <name>` / `--saw-turn` / `--saw-river` — player reached that street
-- `--min-pot <bb>` / `--max-pot <bb>` — pot size bounds in big blinds
-- `--showdown` / `--no-showdown` — filter by showdown
-- `--sort pot` — sort results by pot size descending (default: hand number)
 
-### Player unification
+**Filters:**
+- `--player <name>` — player VPIP'd (voluntarily put money in)
+- `--saw-flop <name>` — player saw the flop
+- `--saw-turn <name>` — player saw the turn
+- `--saw-river <name>` — player saw the river
+- `--min-pot <bb>` — minimum pot size in BB
+- `--max-pot <bb>` — maximum pot size in BB
+- `--showdown` — only showdown hands
+- `--no-showdown` — only non-showdown hands
+- `--sort pot` — sort by pot size descending (default: hand number)
+
+Output: hand number, pot size (BB), showdown status, winner, amount won.
+
+### Global Flags
+
 ```bash
-./target/release/poker-cli --unify-players "Name1,Name2;Name3,Name4" stats <file.json>
+poker-cli --unify-players "pranav,pranavv;Steve,steveooooo" stats session.json
 ```
-Merges player identities. First name in each semicolon-separated group is canonical. Use when same person has multiple PokerNow accounts.
 
-## Workflow patterns
+- `--unify-players <groups>` — merge player identities. First name = canonical. Semicolons separate groups. Overrides config.toml `[unify]`.
 
-**Session review**: Run `stats` first to get the overview, then `search --sort pot` to find interesting hands, then `hand <id>` to replay them.
+## Config File
 
-**Player investigation**: Use `search --player X --min-pot 50` to find hands a player was involved in, then replay specific hands.
+Create `config.toml` in the directory where you run `poker-cli`. Eliminates repetitive CLI args.
 
-**Cross-session comparison**: Pass multiple JSON files to `stats` to aggregate across sessions. Use `--unify-players` if players changed names/accounts between sessions.
+```toml
+# Default hand history files (supports ~ expansion)
+files = [
+  "~/dev/pokernow/hands/2026-03-11.json",
+  "~/dev/pokernow/hands/2026-03-10.json",
+  "~/dev/pokernow/hands/2026-03-08.json",
+  "~/dev/pokernow/hands/2026-03-07.json",
+  "~/dev/pokernow/hands/2026-03-06.json",
+  "~/dev/pokernow/hands/2026-02-23.json",
+]
+
+# Player unification — key is canonical name, value is list of aliases
+[unify]
+pranav = ["pranav", "pranavv"]
+```
+
+**Precedence:** CLI args override config.toml. If files given on CLI, config `files` ignored. If `--unify-players` passed, config `[unify]` ignored.
+
+## What Gets Filtered
+
+Only standard Texas Hold'em is processed. Silently skipped:
+- Omaha hands (`gameType != "th"`)
+- Bomb pots (`bombPot: true`)
+- Double-board games (no type 14 RIT vote event)
+
+Run-it-twice hands are fully supported — first run's board used for stats/eval, hand replay shows both runs.
+
+## Stat Definitions
+
+- **VPIP** — Voluntarily put money in preflop (call or raise, excludes forced bets)
+- **PFR** — Preflop raise
+- **3-Bet%** — Re-raise preflop (second raise)
+- **Fold-to-3B** — Folded after opening and facing a 3-bet
+- **Cold Call%** — Called a raise without having previously put money in
+- **C-Bet%** — Continuation bet (first flop bet by preflop aggressor)
+- **Fold-to-CB** — Folded facing a c-bet
+- **AF** — Aggression Factor: postflop (bets + raises) / calls
+- **WTSD%** — Went to showdown / saw flop
+- **W$SD%** — Won money at showdown / went to showdown
+- **All-in EV** — Expected value in all-in situations vs observed result
+
+## Workflow Patterns
+
+**Session review:** Run `stats` first for the overview, then `search --sort pot` to find interesting hands, then `hand <id>` to replay them.
+
+**Player investigation:** `search --player X --min-pot 50` to find hands a player was involved in, then replay specific hands.
+
+**Cross-session comparison:** Pass multiple JSON files to `stats` to aggregate. Use `--unify-players` or config `[unify]` if players changed names between sessions.
+
+**Pre-game prep:** Load all sessions with regulars to review opponent tendencies. Focus on VPIP-PFR gap, fold-to-3bet, and c-bet frequency.
 
 ## Notes
-- Pot sizes in search results are in big blinds
-- Hand descriptions are contextual for Hold'em (overpair, top pair, flush draw) and standard for Omaha
-- Player name matching is case-insensitive
-- Bomb pot hands are excluded from preflop stats (VPIP, PFR) but included in P&L
+
+- Pot sizes are in big blinds throughout
+- Player name matching is case-sensitive
+- Hand descriptions are contextual for Hold'em (overpair, top pair, flush draw, nut flush draw, etc.)
+- Sequential hand numbers are 1-based (hand 1 = first hand in the file)
+- Multi-file stats merge across all files; hand/search operate on the combined hand list

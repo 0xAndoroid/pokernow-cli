@@ -58,6 +58,7 @@ pub struct Winner {
     pub amount: f64,
     pub cards: Option<Vec<Card>>,
     pub hand_description: Option<String>,
+    pub run: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -83,6 +84,8 @@ pub struct Hand {
     pub real_showdown: bool,
     pub shown_cards: HashMap<u8, Vec<Card>>,
     pub uncalled_returns: HashMap<u8, f64>,
+    pub run_it_twice: bool,
+    pub run2_cards: Vec<(Street, Vec<Card>)>,
 }
 
 pub struct GameData {
@@ -146,6 +149,7 @@ struct RawPayload {
     #[allow(dead_code)]
     position: Option<u8>,
     hand_description: Option<String>,
+    run_number: Option<String>,
     #[allow(dead_code)]
     bomb_pot: Option<bool>,
 }
@@ -218,17 +222,17 @@ fn build_id_unify_map<S: std::hash::BuildHasher>(
 }
 
 fn process_hand(raw: &RawHand, id_unify: &HashMap<String, String>) -> Option<Hand> {
-    // Only standard Texas Hold'em. Omaha, bomb pots, and double board / run-it-twice
-    // are intentionally excluded — these formats are future work.
     if raw.game_type != "th" {
         return None;
     }
     if raw.bomb_pot {
         return None;
     }
-    if has_multiple_runs(&raw.events) {
+    if is_double_board_game(&raw.events) {
         return None;
     }
+
+    let run_it_twice = has_multiple_runs(&raw.events);
 
     let number: u32 = raw.number.parse().unwrap_or(0);
     let mut seats_sorted: Vec<u8> = raw.players.iter().map(|p| p.seat).collect();
@@ -258,8 +262,13 @@ fn process_hand(raw: &RawHand, id_unify: &HashMap<String, String>) -> Option<Han
         })
         .collect();
 
-    let (mut streets, winners, uncalled_returns, show_count) =
-        process_events(&raw.events, &mut shown_cards);
+    let ProcessedEvents {
+        mut streets,
+        winners,
+        uncalled_returns,
+        show_count,
+        run2_cards,
+    } = process_events(&raw.events, &mut shown_cards);
 
     remove_spurious_folds(&raw.events, &mut streets);
 
@@ -285,11 +294,23 @@ fn process_hand(raw: &RawHand, id_unify: &HashMap<String, String>) -> Option<Han
         real_showdown,
         shown_cards,
         uncalled_returns,
+        run_it_twice,
+        run2_cards,
     })
 }
 
 fn has_multiple_runs(events: &[RawEvent]) -> bool {
     events.iter().any(|ev| ev.payload.event_type == 9 && ev.payload.run.unwrap_or(1) > 1)
+}
+
+fn has_rit_vote(events: &[RawEvent]) -> bool {
+    events.iter().any(|ev| ev.payload.event_type == 14)
+}
+
+/// Double-board games deal two boards from the start (game format).
+/// Run-it-twice is a player choice after all-in, signaled by a type 14 vote.
+fn is_double_board_game(events: &[RawEvent]) -> bool {
+    has_multiple_runs(events) && !has_rit_vote(events)
 }
 
 fn assign_positions(seats_sorted: &[u8], dealer_seat: u8) -> HashMap<u8, Position> {
@@ -363,10 +384,18 @@ fn assign_positions(seats_sorted: &[u8], dealer_seat: u8) -> HashMap<u8, Positio
     map
 }
 
+struct ProcessedEvents {
+    streets: Vec<StreetData>,
+    winners: Vec<Winner>,
+    uncalled_returns: HashMap<u8, f64>,
+    show_count: usize,
+    run2_cards: Vec<(Street, Vec<Card>)>,
+}
+
 fn process_events(
     events: &[RawEvent],
     shown_cards: &mut HashMap<u8, Vec<Card>>,
-) -> (Vec<StreetData>, Vec<Winner>, HashMap<u8, f64>, usize) {
+) -> ProcessedEvents {
     let mut streets = vec![StreetData {
         street: Street::Preflop,
         new_cards: Vec::new(),
@@ -375,14 +404,12 @@ fn process_events(
     let mut winners = Vec::new();
     let mut uncalled_returns: HashMap<u8, f64> = HashMap::new();
     let mut show_count: usize = 0;
+    let mut run2_cards: Vec<(Street, Vec<Card>)> = Vec::new();
 
     for ev in events {
         let p = &ev.payload;
 
         if p.event_type == 9 {
-            if p.run.unwrap_or(1) != 1 {
-                continue;
-            }
             let street = match p.turn.unwrap_or(0) {
                 1 => Street::Flop,
                 2 => Street::Turn,
@@ -391,6 +418,11 @@ fn process_events(
             };
             let new_cards =
                 p.cards.as_ref().map(|cs| parse_optional_card_vec(cs)).unwrap_or_default();
+
+            if p.run.unwrap_or(1) > 1 {
+                run2_cards.push((street, new_cards));
+                continue;
+            }
             streets.push(StreetData {
                 street,
                 new_cards,
@@ -423,11 +455,13 @@ fn process_events(
                 if let Some(ref c) = cards {
                     shown_cards.entry(seat).or_insert_with(|| c.clone());
                 }
+                let run: u8 = p.run_number.as_deref().and_then(|s| s.parse().ok()).unwrap_or(1);
                 winners.push(Winner {
                     seat,
                     amount: p.value.unwrap_or(0.0),
                     cards,
                     hand_description: p.hand_description.clone(),
+                    run,
                 });
             }
             12 => {
@@ -450,7 +484,13 @@ fn process_events(
         }
     }
 
-    (streets, winners, uncalled_returns, show_count)
+    ProcessedEvents {
+        streets,
+        winners,
+        uncalled_returns,
+        show_count,
+        run2_cards,
+    }
 }
 
 fn map_kind(event_type: u8) -> Option<ActionType> {
@@ -698,6 +738,12 @@ pub mod test_helpers {
             self.event(serde_json::json!({"type": 10, "seat": seat, "value": value}))
         }
 
+        pub fn win_run(self, seat: u8, value: f64, run: u8) -> Self {
+            self.event(
+                serde_json::json!({"type": 10, "seat": seat, "value": value, "runNumber": run.to_string()}),
+            )
+        }
+
         pub fn win_with_cards(self, seat: u8, value: f64, cards: &[&str]) -> Self {
             let cs: Vec<serde_json::Value> =
                 cards.iter().map(|s| serde_json::Value::String(s.to_string())).collect();
@@ -708,6 +754,10 @@ pub mod test_helpers {
             let cs: Vec<serde_json::Value> =
                 cards.iter().map(|s| serde_json::Value::String(s.to_string())).collect();
             self.event(serde_json::json!({"type": 12, "seat": seat, "cards": cs}))
+        }
+
+        pub fn rit_vote(self) -> Self {
+            self.event(serde_json::json!({"type": 14, "approved": true, "approvedSeats": []}))
         }
 
         pub fn showdown(self) -> Self {
@@ -928,7 +978,41 @@ mod tests {
     }
 
     #[test]
-    fn filter_run_it_twice() {
+    fn run_it_twice_kept() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(1, 1.0)
+            .call(2, 1.0)
+            .check(1)
+            .flop(&["Ah", "Kd", "Qs"])
+            .bet_all_in(1, 100.0)
+            .call_all_in(2, 100.0)
+            .rit_vote()
+            .turn("Js")
+            .board_run2(2, &["7h"])
+            .river("Ts")
+            .board_run2(3, &["2c"])
+            .showdown()
+            .show(1, &["As", "Kh"])
+            .show(2, &["9s", "8s"])
+            .win_run(1, 100.0, 1)
+            .win_run(2, 100.0, 2);
+
+        let hand = parse_single_hand(&b).unwrap();
+        assert!(hand.run_it_twice);
+        assert_eq!(hand.run2_cards.len(), 2);
+        assert_eq!(hand.run2_cards[0].0, Street::Turn);
+        assert_eq!(hand.run2_cards[1].0, Street::River);
+        assert_eq!(hand.winners.len(), 2);
+        assert_eq!(hand.winners[0].run, 1);
+        assert_eq!(hand.winners[1].run, 2);
+    }
+
+    #[test]
+    fn filter_double_board_game() {
         let b = HandBuilder::new()
             .player("p1", 1, "Alice", 100.0)
             .player("p2", 2, "Bob", 100.0)

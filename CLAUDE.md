@@ -6,7 +6,7 @@ PokerNow hand history analyzer. Rust CLI that parses JSON exports from [pokernow
 
 ```bash
 cargo build --release
-cargo test              # 137 tests (125 unit + 12 integration)
+cargo test              # 139 tests (127 unit + 12 integration)
 cargo clippy            # pedantic lints enabled — must be warning-free
 cargo fmt -- --check    # must pass
 cargo llvm-cov --summary-only  # coverage report (~92% line coverage)
@@ -22,12 +22,13 @@ src/main.rs      CLI (clap). Parses args, dispatches to stats/display/search.
 src/config.rs    config.toml parsing (files, player unification). Tilde expansion.
 src/parser.rs    JSON deserialization → Hand/Action/Winner structs. Position assignment.
                  Spurious fold filtering. Net profit calculation. is_monetary() lives here.
-                 Filters: only Hold'em, no bomb pots, no double board / run-it-twice.
+                 Filters: only Hold'em, no bomb pots, no double-board games.
+                 Run-it-twice hands supported (uses first run for eval, displays both).
 src/card.rs      Card(u8) packed repr. 5-card evaluator (brute-force C(n,5)).
                  evaluate() for Hold'em, evaluate_omaha() for Omaha (2+3 rule).
                  holding_description() — contextual hand descriptions with draw detection.
 src/stats.rs     HUD stat computation: VPIP, PFR, 3-bet, C-bet, AF, WTSD, W$SD, EV.
-src/display.rs   Hand replay output. Uses parser::is_monetary (no duplicate).
+src/display.rs   Hand replay output. Run-it-twice shows both runs with results.
 src/search.rs    Hand filtering by player/pot/street/showdown.
 ```
 
@@ -62,8 +63,8 @@ andrew = ["Andrew", "aryan"]
 
 - **Omaha hands filtered out** — only Texas Hold'em (`gameType: "th"`) is processed
 - **Bomb pots filtered out** — `bombPot: true` hands are skipped
-- **Double board / run-it-twice filtered out** — hands with `run > 1` board events are skipped
-- These formats are future work
+- **Double-board games filtered out** — hands with `run > 1` boards but no type 14 (RIT vote)
+- **Run-it-twice supported** — first run's board used for eval/stats; display shows both runs
 
 ## Gotchas
 

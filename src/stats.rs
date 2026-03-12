@@ -462,31 +462,44 @@ fn process_all_in_ev(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
         return;
     }
 
-    let mut all_in_seats: HashSet<u8> = HashSet::new();
-    let mut all_in_street: Option<Street> = None;
+    // Track the last street on which any player went all-in.
+    let mut last_ai_street: Option<Street> = None;
     for sd in &hand.streets {
-        for a in &sd.actions {
-            if a.all_in {
-                all_in_seats.insert(a.seat);
-                if all_in_street.is_none() {
-                    all_in_street = Some(sd.street);
-                }
-            }
+        if sd.actions.iter().any(|a| a.all_in) {
+            last_ai_street = Some(sd.street);
         }
     }
+    let Some(ai_street) = last_ai_street else { return };
 
-    if all_in_seats.len() < 2 {
+    // EV is only meaningful when no further voluntary betting follows the all-in.
+    // A covering player calling the all-in on the same street is fine; we only
+    // check for Bet/Call on streets strictly after the last all-in street.
+    let has_action_after = hand.streets.iter().any(|sd| {
+        sd.street > ai_street
+            && sd.actions.iter().any(|a| matches!(a.kind, ActionType::Bet | ActionType::Call))
+    });
+    if has_action_after {
         return;
     }
 
-    let Some(ai_street) = all_in_street else { return };
+    let folded_seats: HashSet<u8> = hand
+        .streets
+        .iter()
+        .flat_map(|sd| sd.actions.iter())
+        .filter(|a| a.kind == ActionType::Fold)
+        .map(|a| a.seat)
+        .collect();
 
+    // Include all non-folded players with known hole cards — covering players too.
     let mut known: Vec<(u8, &Vec<Card>)> = Vec::new();
-    for &seat in &all_in_seats {
-        if let Some(cards) = get_hole_cards(hand, seat)
+    for p in &hand.players {
+        if folded_seats.contains(&p.seat) {
+            continue;
+        }
+        if let Some(cards) = get_hole_cards(hand, p.seat)
             && cards.len() == 2
         {
-            known.push((seat, cards));
+            known.push((p.seat, cards));
         }
     }
 
@@ -495,22 +508,22 @@ fn process_all_in_ev(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
     }
 
     let board = board_at_street(hand, ai_street);
-
-    let total_won: f64 = hand.winners.iter().map(|w| w.amount).sum();
-    let total_returned: f64 = hand.uncalled_returns.values().sum();
-    let pot = total_won + total_returned;
-
     let equities = calculate_multi_equity(&known, &board, hand);
+
+    // Contested pot = chips awarded at showdown. Uncalled returns are never in
+    // contest and must not inflate the pot or the actual-received figures.
+    let contested_pot: f64 = hand.winners.iter().map(|w| w.amount).sum();
 
     let seat_to_id: HashMap<u8, &str> =
         hand.players.iter().map(|p| (p.seat, p.id.as_str())).collect();
 
     for (i, &(seat, _)) in known.iter().enumerate() {
-        let actual: f64 =
-            hand.winners.iter().filter(|w| w.seat == seat).map(|w| w.amount).sum::<f64>()
-                + hand.uncalled_returns.get(&seat).copied().unwrap_or(0.0);
+        let actual_from_pot: f64 =
+            hand.winners.iter().filter(|w| w.seat == seat).map(|w| w.amount).sum();
 
-        let ev_diff = equities[i] * pot - actual;
+        // Positive = ran below EV (expected more than received); divided by BB
+        // so it's on the same scale as net_bb for the EV-adjusted display.
+        let ev_diff = (equities[i] * contested_pot - actual_from_pot) / hand.big_blind;
 
         if let Some(id) = seat_to_id.get(&seat)
             && let Some(stats) = map.get_mut(*id)
@@ -765,7 +778,7 @@ fn print_player_stats(s: &PlayerStats, rank: Option<usize>) {
 
     if s.all_in_hands > 0 {
         let ev_adj = s.net_bb + s.all_in_ev_diff;
-        let direction = if s.all_in_ev_diff >= 0.0 { "above" } else { "below" };
+        let direction = if s.all_in_ev_diff >= 0.0 { "below" } else { "above" };
         println!(
             "   All-in EV: ran {:.0} BB {} EV (EV-adjusted: {} BB)",
             s.all_in_ev_diff.abs(),
@@ -1131,6 +1144,168 @@ mod tests {
         let data = parse_game_data(&b);
         let s1 = stats_for(&data, "p1");
         assert_eq!(s1.open_raises, 1);
+    }
+
+    // --- All-in EV ---
+
+    fn preflop_allin_hand(bb: f64, stack: f64, p1_wins: bool) -> HandBuilder {
+        // Both players go all-in preflop. p1=AA, p2=KK. Winner set by p1_wins.
+        // Same hole cards and empty board → Monte Carlo equity is reproducible.
+        let winner = if p1_wins { 1 } else { 2 };
+        HandBuilder::new()
+            .blinds(bb / 2.0, bb)
+            .player_with_hand("p1", 1, "Alice", stack, &["Ah", "Ad"])
+            .player_with_hand("p2", 2, "Bob", stack, &["Kh", "Kd"])
+            .dealer(1)
+            .sb(1, bb / 2.0)
+            .bb(2, bb)
+            .bet_all_in(1, stack)
+            .call_all_in(2, stack)
+            .flop(&["2c", "3d", "4s"])
+            .turn("5h")
+            .river("9c")
+            .showdown()
+            .show(1, &["Ah", "Ad"])
+            .show(2, &["Kh", "Kd"])
+            .win(winner, stack * 2.0)
+    }
+
+    // Both players all-in preflop: both must be tracked and ev_diffs sum to zero.
+    #[test]
+    fn all_in_ev_both_all_in_equal_stacks() {
+        let b = preflop_allin_hand(1.0, 100.0, true);
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        let s2 = stats_for(&data, "p2");
+
+        assert_eq!(s1.all_in_hands, 1);
+        assert_eq!(s2.all_in_hands, 1);
+        // Sum of ev_diffs is always 0: equity_p1 + equity_p2 = 1, actual_p1 + actual_p2 = pot.
+        assert!((s1.all_in_ev_diff + s2.all_in_ev_diff).abs() < 0.01);
+    }
+
+    // Covering player: p1 raises preflop (NOT all-in), p2 calls all-in.
+    // p1 never has all_in=true — this is the primary bug scenario.
+    #[test]
+    fn all_in_ev_covering_player_counted() {
+        // p1 (200 chips) raises to 100 preflop — NOT all-in (100 chips remain).
+        // p2 (100 chips) calls all-in for 100.
+        let b = HandBuilder::new()
+            .blinds(0.5, 1.0)
+            .player_with_hand("p1", 1, "Alice", 200.0, &["Ah", "Ad"])
+            .player_with_hand("p2", 2, "Bob", 100.0, &["Kh", "Kd"])
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .bet(1, 100.0) // NOT all-in: p1 has 100 chips remaining
+            .call_all_in(2, 100.0)
+            .flop(&["2c", "3d", "4s"])
+            .turn("5h")
+            .river("9c")
+            .showdown()
+            .show(1, &["Ah", "Ad"])
+            .show(2, &["Kh", "Kd"])
+            .win(1, 200.0);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        let s2 = stats_for(&data, "p2");
+
+        // Primary bug: covering player must be tracked even without all_in=true.
+        assert_eq!(s1.all_in_hands, 1, "covering player must be tracked");
+        assert_eq!(s2.all_in_hands, 1);
+        // Both tracked → ev_diffs sum to 0.
+        assert!((s1.all_in_ev_diff + s2.all_in_ev_diff).abs() < 0.01);
+    }
+
+    // When action continues after the all-in (side pot), EV should NOT be tracked.
+    #[test]
+    fn all_in_ev_skipped_when_action_continues_after() {
+        // p1 all-in preflop, p2 and p3 both have chips left → postflop action possible.
+        let b = HandBuilder::new()
+            .blinds(0.5, 1.0)
+            .player_with_hand("p1", 1, "Alice", 50.0, &["Ah", "Ad"])
+            .player_with_hand("p2", 2, "Bob", 200.0, &["Kh", "Kd"])
+            .player_with_hand("p3", 3, "Carol", 200.0, &["Qh", "Qd"])
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet_all_in(1, 50.0)
+            .call(2, 50.0)
+            .call(3, 50.0)
+            .flop(&["2c", "3d", "4s"])
+            // p2 and p3 still have chips → action continues after the all-in
+            .bet(2, 10.0)
+            .call(3, 10.0)
+            .turn("5h")
+            .check(2)
+            .check(3)
+            .river("9c")
+            .check(2)
+            .check(3)
+            .showdown()
+            .show(1, &["Ah", "Ad"])
+            .show(2, &["Kh", "Kd"])
+            .show(3, &["Qh", "Qd"])
+            .win(1, 150.0)
+            .win(2, 20.0);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(s1.all_in_hands, 0, "EV must not be tracked when action continues");
+    }
+
+    // Uncalled return must not inflate the contested pot.
+    // Verify both players are tracked and ev_diffs sum to zero.
+    #[test]
+    fn all_in_ev_uncalled_return_excluded() {
+        // p1 (200 chips) goes all-in preflop for 200. p2 (100 chips) calls all-in for 100.
+        // 100 chips returned to p1 uncalled. Contested pot = 200.
+        let b = HandBuilder::new()
+            .blinds(0.5, 1.0)
+            .player_with_hand("p1", 1, "Alice", 200.0, &["Ah", "Ad"])
+            .player_with_hand("p2", 2, "Bob", 100.0, &["Kh", "Kd"])
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .bet_all_in(1, 200.0)
+            .call_all_in(2, 100.0)
+            .uncalled_return(1, 100.0)
+            .flop(&["2c", "3d", "4s"])
+            .turn("5h")
+            .river("9c")
+            .showdown()
+            .show(1, &["Ah", "Ad"])
+            .show(2, &["Kh", "Kd"])
+            .win(1, 200.0);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        let s2 = stats_for(&data, "p2");
+
+        assert_eq!(s1.all_in_hands, 1);
+        assert_eq!(s2.all_in_hands, 1);
+        assert!((s1.all_in_ev_diff + s2.all_in_ev_diff).abs() < 0.01);
+    }
+
+    // ev_diff must be in BBs so it's on the same scale as net_bb.
+    // Identical hand at BB=1 (stack=100) vs BB=2 (stack=200): same proportional position,
+    // same hole cards, same Monte Carlo seed → same equity → ev_diff must be equal.
+    // If ev_diff were in chip units (not divided by BB), the BB=2 value would be 2×.
+    #[test]
+    fn all_in_ev_diff_in_bb_units() {
+        let b1 = preflop_allin_hand(1.0, 100.0, true);
+        let b2 = preflop_allin_hand(2.0, 200.0, true);
+
+        let s1 = stats_for(&parse_game_data(&b1), "p1");
+        let s2 = stats_for(&parse_game_data(&b2), "p1");
+
+        assert!(
+            (s1.all_in_ev_diff - s2.all_in_ev_diff).abs() < 0.01,
+            "ev_diff(BB=1)={} ev_diff(BB=2)={} — must be equal when stacks are proportional",
+            s1.all_in_ev_diff,
+            s2.all_in_ev_diff
+        );
     }
 
     // --- fmt helpers ---

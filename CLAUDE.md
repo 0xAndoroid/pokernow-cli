@@ -6,7 +6,7 @@ PokerNow hand history analyzer. Rust CLI that parses JSON exports from [pokernow
 
 ```bash
 cargo build --release
-cargo test              # 139 tests (127 unit + 12 integration)
+cargo test              # 146 tests (134 unit + 12 integration)
 cargo clippy            # pedantic lints enabled — must be warning-free
 cargo fmt -- --check    # must pass
 cargo llvm-cov --summary-only  # coverage report (~92% line coverage)
@@ -27,9 +27,12 @@ src/parser.rs    JSON deserialization → Hand/Action/Winner structs. Position a
 src/card.rs      Card(u8) packed repr. 5-card evaluator (brute-force C(n,5)).
                  evaluate() for Hold'em, evaluate_omaha() for Omaha (2+3 rule).
                  holding_description() — contextual hand descriptions with draw detection.
-src/stats.rs     HUD stat computation: VPIP, PFR, 3-bet, C-bet, AF, WTSD, W$SD, EV.
+src/stats.rs     HUD stat computation: VPIP, PFR, 3-bet, C-bet, AF, WTSD, W$SD, WWSF, EV.
 src/display.rs   Hand replay output. Run-it-twice shows both runs with results.
-src/search.rs    Hand filtering by player/pot/street/showdown.
+                 Per-player net P&L. Effective stacks in header.
+src/search.rs    Hand filtering by player/pot/street/showdown/won/lost.
+                 Player-aware showdown filter. Player net column.
+src/summary.rs   Compact session summary: hand count, P&L table, biggest pot.
 ```
 
 ## Config file

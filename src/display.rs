@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::card::{self, Card};
-use crate::parser::{ActionType, Hand, Position, Street};
+use crate::parser::{ActionType, Hand, Position, Street, net_profit};
 
 const POSITION_ORDER: [Position; 6] =
     [Position::BTN, Position::SB, Position::BB, Position::EP, Position::MP, Position::CO];
@@ -37,6 +37,8 @@ pub fn display_hand(hand: &Hand) {
     } else {
         print_results(hand, &seat_name);
     }
+
+    print_net_pnl(hand, &seat_name);
 }
 
 fn build_seat_name_map(hand: &Hand) -> HashMap<u8, String> {
@@ -58,12 +60,16 @@ fn build_hole_cards_map(hand: &Hand) -> HashMap<u8, Vec<Card>> {
 
 fn print_header(hand: &Hand, seat_name: &HashMap<u8, String>) {
     let bomb = if hand.bomb_pot { " [BOMB POT]" } else { "" };
+    let eff_stack = hand.players.iter().map(|p| p.stack).fold(f64::INFINITY, f64::min);
+    let eff_bb = eff_stack / hand.big_blind;
     println!(
-        "Hand #{} | Stakes {}/{} | {} players{}",
+        "Hand #{} ({}) | Stakes {}/{} | {} players | Eff: {} BB{}",
         hand.number,
+        hand.id,
         format_chips(hand.small_blind),
         format_chips(hand.big_blind),
         hand.players.len(),
+        format_bb(eff_bb),
         bomb,
     );
 
@@ -309,6 +315,38 @@ fn print_results(hand: &Hand, seat_name: &HashMap<u8, String>) {
             None => println!("  {} wins {}", name, format_chips(w.amount)),
         }
     }
+}
+
+fn print_net_pnl(hand: &Hand, seat_name: &HashMap<u8, String>) {
+    let mut entries: Vec<(&str, f64)> = hand
+        .players
+        .iter()
+        .map(|p| {
+            let name = seat_name.get(&p.seat).map_or("?", String::as_str);
+            let net = net_profit(hand, p.seat);
+            (name, net)
+        })
+        .filter(|(_, net)| net.abs() > 0.001)
+        .collect();
+
+    if entries.is_empty() {
+        return;
+    }
+
+    entries.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+    let parts: Vec<String> = entries
+        .iter()
+        .map(|(name, net)| {
+            if *net >= 0.0 {
+                format!("{name} +{}", format_chips(*net))
+            } else {
+                format!("{name} {}", format_chips(*net))
+            }
+        })
+        .collect();
+
+    println!("Net: {}", parts.join(" | "));
 }
 
 fn format_cards(cards: &[Card]) -> String {

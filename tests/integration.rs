@@ -81,6 +81,8 @@ fn search_with_no_filter_returns_all() {
         min_pot: None,
         max_pot: None,
         showdown: None,
+        won: false,
+        lost: false,
         sort: SortField::HandId,
     };
     let results = search::search_hands(&data, &filter);
@@ -99,6 +101,8 @@ fn search_showdown_filter_partitions() {
         min_pot: None,
         max_pot: None,
         showdown: Some(true),
+        won: false,
+        lost: false,
         sort: SortField::HandId,
     };
     let no_sd_filter = SearchFilter {
@@ -109,6 +113,8 @@ fn search_showdown_filter_partitions() {
         min_pot: None,
         max_pot: None,
         showdown: Some(false),
+        won: false,
+        lost: false,
         sort: SortField::HandId,
     };
 
@@ -128,6 +134,8 @@ fn search_pot_sort_is_descending() {
         min_pot: None,
         max_pot: None,
         showdown: None,
+        won: false,
+        lost: false,
         sort: SortField::Pot,
     };
     let results = search::search_hands(&data, &filter);

@@ -30,6 +30,7 @@ pub struct PlayerStats {
     pub postflop_calls: u32,
 
     pub saw_flop: u32,
+    pub won_when_saw_flop: u32,
     pub went_to_showdown: u32,
     pub won_at_showdown: u32,
 
@@ -337,12 +338,17 @@ fn process_postflop(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
 
     let pf_aggressor = if hand.bomb_pot { None } else { preflop_aggressor(preflop) };
 
+    let winner_seats: HashSet<u8> = hand.winners.iter().map(|w| w.seat).collect();
+
     for p in &hand.players {
         if saw_street(hand, p.seat, Street::Flop)
             && hand.streets.iter().any(|sd| sd.street >= Street::Flop)
             && let Some(stats) = map.get_mut(p.id.as_str())
         {
             stats.saw_flop += 1;
+            if winner_seats.contains(&p.seat) {
+                stats.won_when_saw_flop += 1;
+            }
         }
     }
 
@@ -718,67 +724,87 @@ fn fmt_bb(v: f64) -> String {
     if v >= 0.0 { format!("+{v:.1}") } else { format!("{v:.1}") }
 }
 
+fn print_player_stats(s: &PlayerStats, rank: Option<usize>) {
+    let bb_per_hand =
+        if s.hands_at_table > 0 { s.net_bb / f64::from(s.hands_at_table) } else { 0.0 };
+
+    if let Some(r) = rank {
+        println!("{}. {} (ID: {})", r + 1, s.name, s.player_id);
+    } else {
+        println!("{} (ID: {})", s.name, s.player_id);
+    }
+    println!("   Hands: {}/{} (played/total)", s.hands_played, s.hands_at_table);
+    println!("   P&L: {} BB ({} BB/hand)", fmt_bb(s.net_bb), fmt_bb(bb_per_hand));
+    println!();
+
+    println!(
+        "   Preflop:  VPIP {}  PFR {}  3-Bet {}  Fold-to-3B {}",
+        fmt_pct(s.vpip_hands, s.hands_played),
+        fmt_pct(s.pfr_hands, s.hands_played),
+        fmt_pct(s.three_bets, s.three_bet_opp),
+        fmt_pct(s.fold_to_three_bets, s.fold_to_three_bet_opp),
+    );
+    println!(
+        "             Open-raise {}  Limp {}  Cold-call {}",
+        s.open_raises, s.limps, s.cold_calls
+    );
+
+    println!(
+        "   Postflop: C-bet {}  Fold-to-CB {}  AF {}",
+        fmt_pct(s.cbets, s.cbet_opp),
+        fmt_pct(s.fold_to_cbets, s.fold_to_cbet_opp),
+        fmt_af(s.postflop_bets, s.postflop_calls),
+    );
+
+    println!(
+        "   Showdown: WTSD {}  W$SD {}  WWSF {}",
+        fmt_pct(s.went_to_showdown, s.saw_flop),
+        fmt_pct(s.won_at_showdown, s.went_to_showdown),
+        fmt_pct(s.won_when_saw_flop, s.saw_flop),
+    );
+
+    if s.all_in_hands > 0 {
+        let ev_adj = s.net_bb + s.all_in_ev_diff;
+        let direction = if s.all_in_ev_diff >= 0.0 { "above" } else { "below" };
+        println!(
+            "   All-in EV: ran {:.0} BB {} EV (EV-adjusted: {} BB)",
+            s.all_in_ev_diff.abs(),
+            direction,
+            fmt_bb(ev_adj),
+        );
+    }
+    println!();
+
+    println!("   Position VPIP/PFR:");
+    let labels = ["EP", "MP", "CO", "BTN", "SB", "BB"];
+    let mut pos_line = String::from("     ");
+    for (i, label) in labels.iter().enumerate() {
+        let vpip = fmt_pct(s.pos_vpip[i], s.pos_hands[i]);
+        let pfr = fmt_pct(s.pos_pfr[i], s.pos_hands[i]);
+        if i > 0 {
+            pos_line.push_str("  ");
+        }
+        let _ = write!(pos_line, "{label:<3} {vpip}/{pfr}");
+    }
+    println!("{pos_line}");
+    println!();
+}
+
 pub fn print_stats(stats: &[PlayerStats]) {
     println!("Player Stats (ranked by P&L)");
     println!("============================\n");
 
     for (rank, s) in stats.iter().enumerate() {
-        let bb_per_hand =
-            if s.hands_at_table > 0 { s.net_bb / f64::from(s.hands_at_table) } else { 0.0 };
+        print_player_stats(s, Some(rank));
+    }
+}
 
-        println!("{}. {} (ID: {})", rank + 1, s.name, s.player_id);
-        println!("   Hands: {}/{} (played/total)", s.hands_played, s.hands_at_table);
-        println!("   P&L: {} BB ({} BB/hand)", fmt_bb(s.net_bb), fmt_bb(bb_per_hand));
-        println!();
-
-        println!(
-            "   Preflop:  VPIP {}  PFR {}  3-Bet {}  Fold-to-3B {}",
-            fmt_pct(s.vpip_hands, s.hands_played),
-            fmt_pct(s.pfr_hands, s.hands_played),
-            fmt_pct(s.three_bets, s.three_bet_opp),
-            fmt_pct(s.fold_to_three_bets, s.fold_to_three_bet_opp),
-        );
-        println!(
-            "             Open-raise {}  Limp {}  Cold-call {}",
-            s.open_raises, s.limps, s.cold_calls
-        );
-
-        println!(
-            "   Postflop: C-bet {}  Fold-to-CB {}  AF {}",
-            fmt_pct(s.cbets, s.cbet_opp),
-            fmt_pct(s.fold_to_cbets, s.fold_to_cbet_opp),
-            fmt_af(s.postflop_bets, s.postflop_calls),
-        );
-
-        println!(
-            "   Showdown: WTSD {}  W$SD {}",
-            fmt_pct(s.went_to_showdown, s.saw_flop),
-            fmt_pct(s.won_at_showdown, s.went_to_showdown),
-        );
-
-        if s.all_in_hands > 0 {
-            println!(
-                "   ALL-IN EV: {} BB (ran {} BB {})",
-                fmt_bb(s.all_in_ev_diff),
-                fmt_bb(s.all_in_ev_diff.abs()),
-                if s.all_in_ev_diff >= 0.0 { "above EV" } else { "below EV" }
-            );
-        }
-        println!();
-
-        println!("   Position VPIP/PFR:");
-        let labels = ["EP", "MP", "CO", "BTN", "SB", "BB"];
-        let mut pos_line = String::from("     ");
-        for (i, label) in labels.iter().enumerate() {
-            let vpip = fmt_pct(s.pos_vpip[i], s.pos_hands[i]);
-            let pfr = fmt_pct(s.pos_pfr[i], s.pos_hands[i]);
-            if i > 0 {
-                pos_line.push_str("  ");
-            }
-            let _ = write!(pos_line, "{label:<3} {vpip}/{pfr}");
-        }
-        println!("{pos_line}");
-        println!();
+pub fn print_single_player_stats(stats: &[PlayerStats], name: &str) {
+    let lower = name.to_ascii_lowercase();
+    let found = stats.iter().find(|s| s.name.to_ascii_lowercase() == lower);
+    match found {
+        Some(s) => print_player_stats(s, None),
+        None => eprintln!("Player '{name}' not found in stats"),
     }
 }
 
@@ -982,6 +1008,37 @@ mod tests {
         assert_eq!(s2.saw_flop, 1);
         assert_eq!(s2.went_to_showdown, 1);
         assert_eq!(s2.won_at_showdown, 0);
+    }
+
+    #[test]
+    fn wwsf_tracking() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0)
+            .call(2, 3.0)
+            .fold(3)
+            .flop(&["Ah", "Kd", "Qs"])
+            .bet(1, 5.0)
+            .fold(2)
+            .win(1, 11.0);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(s1.saw_flop, 1);
+        assert_eq!(s1.won_when_saw_flop, 1);
+
+        let s2 = stats_for(&data, "p2");
+        assert_eq!(s2.saw_flop, 1);
+        assert_eq!(s2.won_when_saw_flop, 0);
+
+        let s3 = stats_for(&data, "p3");
+        assert_eq!(s3.saw_flop, 0);
+        assert_eq!(s3.won_when_saw_flop, 0);
     }
 
     // --- Positional stats ---

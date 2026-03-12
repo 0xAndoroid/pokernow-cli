@@ -190,11 +190,6 @@ fn build_id_unify_map<S: std::hash::BuildHasher>(
     paths: &[String],
     unify: &HashMap<String, String, S>,
 ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
-    if unify.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    // Collect ALL ids seen per name — a player may join across sessions with different IDs.
     let mut name_to_ids: HashMap<String, Vec<String>> = HashMap::new();
 
     for path in paths {
@@ -211,34 +206,49 @@ fn build_id_unify_map<S: std::hash::BuildHasher>(
         }
     }
 
-    // Group alias names by their canonical name key.
-    let mut canonical_to_aliases: HashMap<&str, Vec<&str>> = HashMap::new();
-    for (alias_name, canonical_name) in unify {
-        canonical_to_aliases.entry(canonical_name.as_str()).or_default().push(alias_name.as_str());
-    }
-
     let mut id_map: HashMap<String, String> = HashMap::new();
 
-    for (canonical_name, alias_names) in &canonical_to_aliases {
-        // Collect all names in this group: canonical first (preferred primary), then aliases.
-        // The primary ID is the first ID found across any name in the group.
-        let all_names = std::iter::once(*canonical_name).chain(alias_names.iter().copied());
-        let primary_id = all_names
-            .clone()
-            .flat_map(|name| name_to_ids.get(name).into_iter().flatten())
-            .next()
-            .cloned();
+    // Auto-unify: same name, multiple IDs → map all to first-seen ID.
+    for ids in name_to_ids.values() {
+        if ids.len() > 1 {
+            let primary = &ids[0];
+            for id in ids.iter().skip(1) {
+                id_map.insert(id.clone(), primary.clone());
+            }
+        }
+    }
 
-        let Some(primary_id) = primary_id else {
-            continue;
-        };
+    // Config aliases: group by canonical key, merge all alias IDs to one primary.
+    if !unify.is_empty() {
+        let mut canonical_to_aliases: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (alias_name, canonical_name) in unify {
+            canonical_to_aliases
+                .entry(canonical_name.as_str())
+                .or_default()
+                .push(alias_name.as_str());
+        }
 
-        // Map every other ID in the group to the primary.
-        for name in all_names {
-            if let Some(ids) = name_to_ids.get(name) {
-                for id in ids {
-                    if id != &primary_id {
-                        id_map.insert(id.clone(), primary_id.clone());
+        for (canonical_name, alias_names) in &canonical_to_aliases {
+            let all_names = std::iter::once(*canonical_name).chain(alias_names.iter().copied());
+
+            // Resolve through any auto-unify mapping to find the true primary.
+            let primary_id = all_names
+                .clone()
+                .flat_map(|name| name_to_ids.get(name).into_iter().flatten())
+                .next()
+                .map(|id| id_map.get(id).unwrap_or(id).clone());
+
+            let Some(primary_id) = primary_id else {
+                continue;
+            };
+
+            for name in all_names {
+                if let Some(ids) = name_to_ids.get(name) {
+                    for id in ids {
+                        let resolved = id_map.get(id).unwrap_or(id);
+                        if resolved != &primary_id {
+                            id_map.insert(id.clone(), primary_id.clone());
+                        }
                     }
                 }
             }
@@ -1451,10 +1461,9 @@ mod tests {
         assert!((db_action.amount - 1.0).abs() < 0.001);
     }
 
-    // A player who appears under the same name but different IDs in two hands (same session)
-    // should be unified into a single player entry when their name is listed as an alias.
+    // Same name, different IDs across sessions → auto-unified without any config.
     #[test]
-    fn unify_same_name_multiple_ids() {
+    fn auto_unify_same_name_multiple_ids() {
         let hand1 = HandBuilder::new()
             .player("id_alice_v1", 1, "Alice", 100.0)
             .player("id_bob", 2, "Bob", 100.0)
@@ -1473,14 +1482,11 @@ mod tests {
             .fold(1)
             .win(2, 1.5);
 
-        // "Alice" → "alice" unification: Alice appears with two different IDs
-        let unify: HashMap<String, String> =
-            [("Alice".to_string(), "alice".to_string())].into_iter().collect();
-        let data = parse_multi_game_data_with_unify(&[&hand1, &hand2], &unify);
+        // No unify config — auto-unification by name
+        let data = parse_multi_game_data(&[&hand1, &hand2]);
 
         let player_ids: std::collections::HashSet<_> =
             data.hands.iter().flat_map(|h| h.players.iter().map(|p| p.id.as_str())).collect();
-        // Both Alice hands should share the same canonical ID
         assert!(!player_ids.contains("id_alice_v2"), "id_alice_v2 should be unified away");
         assert!(player_ids.contains("id_alice_v1"), "id_alice_v1 should be the primary ID");
     }

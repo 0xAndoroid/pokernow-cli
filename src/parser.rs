@@ -171,7 +171,7 @@ pub fn parse_files<S: std::hash::BuildHasher>(
         for raw_hand in raw.hands {
             for rp in &raw_hand.players {
                 let canonical = id_unify.get(&rp.id).unwrap_or(&rp.id);
-                player_names.insert(canonical.clone(), rp.name.clone());
+                player_names.entry(canonical.clone()).or_insert_with(|| rp.name.clone());
             }
 
             if let Some(hand) = process_hand(&raw_hand, &id_unify) {
@@ -194,7 +194,8 @@ fn build_id_unify_map<S: std::hash::BuildHasher>(
         return Ok(HashMap::new());
     }
 
-    let mut name_to_id: HashMap<String, String> = HashMap::new();
+    // Collect ALL ids seen per name — a player may join across sessions with different IDs.
+    let mut name_to_ids: HashMap<String, Vec<String>> = HashMap::new();
 
     for path in paths {
         let file = File::open(path)?;
@@ -202,19 +203,45 @@ fn build_id_unify_map<S: std::hash::BuildHasher>(
         let raw: RawGameFile = serde_json::from_reader(reader)?;
         for raw_hand in &raw.hands {
             for rp in &raw_hand.players {
-                name_to_id.entry(rp.name.clone()).or_insert(rp.id.clone());
+                let ids = name_to_ids.entry(rp.name.clone()).or_default();
+                if !ids.contains(&rp.id) {
+                    ids.push(rp.id.clone());
+                }
             }
         }
     }
 
+    // Group alias names by their canonical name key.
+    let mut canonical_to_aliases: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (alias_name, canonical_name) in unify {
+        canonical_to_aliases.entry(canonical_name.as_str()).or_default().push(alias_name.as_str());
+    }
+
     let mut id_map: HashMap<String, String> = HashMap::new();
-    for (name, canonical_name) in unify {
-        let canonical_id = name_to_id.get(canonical_name.as_str());
-        let source_id = name_to_id.get(name.as_str());
-        if let (Some(src), Some(canon)) = (source_id, canonical_id)
-            && src != canon
-        {
-            id_map.insert(src.clone(), canon.clone());
+
+    for (canonical_name, alias_names) in &canonical_to_aliases {
+        // Collect all names in this group: canonical first (preferred primary), then aliases.
+        // The primary ID is the first ID found across any name in the group.
+        let all_names = std::iter::once(*canonical_name).chain(alias_names.iter().copied());
+        let primary_id = all_names
+            .clone()
+            .flat_map(|name| name_to_ids.get(name).into_iter().flatten())
+            .next()
+            .cloned();
+
+        let Some(primary_id) = primary_id else {
+            continue;
+        };
+
+        // Map every other ID in the group to the primary.
+        for name in all_names {
+            if let Some(ids) = name_to_ids.get(name) {
+                for id in ids {
+                    if id != &primary_id {
+                        id_map.insert(id.clone(), primary_id.clone());
+                    }
+                }
+            }
         }
     }
 
@@ -901,6 +928,15 @@ pub mod test_helpers {
         let path = tmp.path().to_string_lossy().to_string();
         parse_files(&[path], unify).unwrap()
     }
+
+    pub fn parse_multi_game_data_with_unify<S: std::hash::BuildHasher>(
+        builders: &[&HandBuilder],
+        unify: &HashMap<String, String, S>,
+    ) -> GameData {
+        let tmp = HandBuilder::write_multi_to_tmp(builders);
+        let path = tmp.path().to_string_lossy().to_string();
+        parse_files(&[path], unify).unwrap()
+    }
 }
 
 #[cfg(test)]
@@ -1413,5 +1449,83 @@ mod tests {
             hand.streets[0].actions.iter().find(|a| a.kind == ActionType::DeadBlind).unwrap();
         assert_eq!(db_action.seat, 1);
         assert!((db_action.amount - 1.0).abs() < 0.001);
+    }
+
+    // A player who appears under the same name but different IDs in two hands (same session)
+    // should be unified into a single player entry when their name is listed as an alias.
+    #[test]
+    fn unify_same_name_multiple_ids() {
+        let hand1 = HandBuilder::new()
+            .player("id_alice_v1", 1, "Alice", 100.0)
+            .player("id_bob", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .win(2, 1.5);
+
+        let hand2 = HandBuilder::new()
+            .player("id_alice_v2", 1, "Alice", 100.0)
+            .player("id_bob", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .win(2, 1.5);
+
+        // "Alice" → "alice" unification: Alice appears with two different IDs
+        let unify: HashMap<String, String> =
+            [("Alice".to_string(), "alice".to_string())].into_iter().collect();
+        let data = parse_multi_game_data_with_unify(&[&hand1, &hand2], &unify);
+
+        let player_ids: std::collections::HashSet<_> =
+            data.hands.iter().flat_map(|h| h.players.iter().map(|p| p.id.as_str())).collect();
+        // Both Alice hands should share the same canonical ID
+        assert!(!player_ids.contains("id_alice_v2"), "id_alice_v2 should be unified away");
+        assert!(player_ids.contains("id_alice_v1"), "id_alice_v1 should be the primary ID");
+    }
+
+    // Canonical config key that doesn't appear in game data: the first alias's ID becomes primary.
+    #[test]
+    fn unify_canonical_name_not_in_data() {
+        let hand1 = HandBuilder::new()
+            .player("id_andrew", 1, "Andrew", 100.0)
+            .player("id_bob", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .win(2, 1.5);
+
+        let hand2 = HandBuilder::new()
+            .player("id_aryan", 1, "aryan", 100.0)
+            .player("id_bob", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .win(2, 1.5);
+
+        // Config: andrew = ["Andrew", "aryan"] — "andrew" (lowercase) never appears in data
+        let unify: HashMap<String, String> = [
+            ("Andrew".to_string(), "andrew".to_string()),
+            ("aryan".to_string(), "andrew".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let data = parse_multi_game_data_with_unify(&[&hand1, &hand2], &unify);
+
+        let player_ids: std::collections::HashSet<_> =
+            data.hands.iter().flat_map(|h| h.players.iter().map(|p| p.id.as_str())).collect();
+        // Both should share the same ID (whichever was first)
+        assert!(
+            !player_ids.contains("id_andrew") || !player_ids.contains("id_aryan"),
+            "Andrew and aryan should be unified into one ID"
+        );
+        assert_eq!(
+            player_ids.iter().filter(|&&id| id != "id_bob").count(),
+            1,
+            "should be exactly one non-Bob player ID after unification"
+        );
     }
 }

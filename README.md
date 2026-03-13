@@ -11,7 +11,7 @@ Requires Rust 1.85+ (2024 edition).
 Install from source:
 
 ```bash
-git clone https://github.com/andoroid/poker-cli.git
+git clone https://github.com/0xAndoroid/pokernow-cli.git
 cd poker-cli
 cargo install --path ./
 ```

@@ -78,6 +78,8 @@ pub struct Hand {
     pub number: u32,
     pub small_blind: f64,
     pub big_blind: f64,
+    pub effective_bb: f64,
+    pub straddle_seat: Option<u8>,
     pub bomb_pot: bool,
     pub players: Vec<PlayerInHand>,
     pub streets: Vec<StreetData>,
@@ -112,7 +114,6 @@ struct RawHand {
     big_blind: f64,
     #[allow(dead_code)]
     ante: Option<f64>,
-    #[allow(dead_code)]
     straddle_seat: Option<u8>,
     dealer_seat: u8,
     bomb_pot: bool,
@@ -288,7 +289,14 @@ fn process_hand(
     let run_it_twice = has_multiple_runs(&raw.events);
 
     let number: u32 = raw.number.parse().unwrap_or(0);
-    let (small_blind, big_blind) = apply_blind_remap(raw.small_blind, raw.big_blind, blind_remap);
+    let (mut small_blind, big_blind) =
+        apply_blind_remap(raw.small_blind, raw.big_blind, blind_remap);
+
+    // HU straddle anomaly: PokerNow reports SB > BB when the SB straddles
+    if raw.straddle_seat.is_some() && small_blind > big_blind {
+        small_blind = big_blind;
+    }
+
     let mut seats_sorted: Vec<u8> = raw.players.iter().map(|p| p.seat).collect();
     seats_sorted.sort_unstable();
     let positions = assign_positions(&seats_sorted, raw.dealer_seat);
@@ -336,11 +344,20 @@ fn process_hand(
 
     let real_showdown = show_count >= 2;
 
+    let straddle_amount = streets
+        .iter()
+        .flat_map(|sd| sd.actions.iter())
+        .find(|a| a.kind == ActionType::Straddle)
+        .map(|a| a.amount);
+    let effective_bb = straddle_amount.unwrap_or(big_blind);
+
     Some(Hand {
         id: raw.id.clone(),
         number,
         small_blind,
         big_blind,
+        effective_bb,
+        straddle_seat: raw.straddle_seat,
         bomb_pot: raw.bomb_pot,
         players,
         streets,
@@ -699,6 +716,7 @@ pub mod test_helpers {
         game_type: String,
         small_blind: f64,
         big_blind: f64,
+        straddle_seat: Option<u8>,
         dealer_seat: u8,
         bomb_pot: bool,
         players: Vec<(String, u8, String, f64, Option<Vec<String>>)>,
@@ -719,6 +737,7 @@ pub mod test_helpers {
                 game_type: "th".into(),
                 small_blind: 0.5,
                 big_blind: 1.0,
+                straddle_seat: None,
                 dealer_seat: 1,
                 bomb_pot: false,
                 players: Vec::new(),
@@ -795,6 +814,11 @@ pub mod test_helpers {
 
         pub fn ante(self, seat: u8, value: f64) -> Self {
             self.event(serde_json::json!({"type": 4, "seat": seat, "value": value}))
+        }
+
+        pub fn straddle(mut self, seat: u8, value: f64) -> Self {
+            self.straddle_seat = Some(seat);
+            self.event(serde_json::json!({"type": 5, "seat": seat, "value": value}))
         }
 
         pub fn fold(self, seat: u8) -> Self {
@@ -908,7 +932,7 @@ pub mod test_helpers {
                 "smallBlind": self.small_blind,
                 "bigBlind": self.big_blind,
                 "ante": null,
-                "straddleSeat": null,
+                "straddleSeat": self.straddle_seat,
                 "dealerSeat": self.dealer_seat,
                 "bombPot": self.bomb_pot,
                 "players": players,
@@ -952,7 +976,7 @@ pub mod test_helpers {
                         "smallBlind": b.small_blind,
                         "bigBlind": b.big_blind,
                         "ante": null,
-                        "straddleSeat": null,
+                        "straddleSeat": b.straddle_seat,
                         "dealerSeat": b.dealer_seat,
                         "bombPot": b.bomb_pot,
                         "players": players,
@@ -1835,5 +1859,138 @@ mod tests {
         let folds: Vec<u8> =
             preflop.actions.iter().filter(|a| a.kind == ActionType::Fold).map(|a| a.seat).collect();
         assert_eq!(folds, vec![2, 1], "both ActionMarker folds must be preserved");
+    }
+
+    #[test]
+    fn straddle_sets_effective_bb() {
+        let b = HandBuilder::new()
+            .blinds(0.5, 1.0)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .straddle(1, 2.0)
+            .fold(2)
+            .fold(3)
+            .win(1, 3.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        assert_eq!(hand.straddle_seat, Some(1));
+        assert_eq!(hand.big_blind, 1.0);
+        assert_eq!(hand.effective_bb, 2.0);
+    }
+
+    #[test]
+    fn no_straddle_effective_bb_equals_big_blind() {
+        let b = HandBuilder::new()
+            .blinds(0.5, 1.0)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .win(2, 1.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        assert!(hand.straddle_seat.is_none());
+        assert_eq!(hand.effective_bb, 1.0);
+    }
+
+    #[test]
+    fn hu_straddle_fixes_blind_anomaly() {
+        // PokerNow reports SB=2, BB=1 for HU straddle
+        let b = HandBuilder::new()
+            .blinds(2.0, 1.0)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(2, 1.0)
+            .bb(1, 1.0)
+            .straddle(2, 2.0)
+            .fold(1)
+            .win(2, 4.0);
+
+        let hand = parse_single_hand(&b).unwrap();
+        assert_eq!(hand.small_blind, 1.0, "SB should be corrected from 2 to 1");
+        assert_eq!(hand.big_blind, 1.0);
+        assert_eq!(hand.effective_bb, 2.0);
+    }
+
+    #[test]
+    fn straddle_invested_correctly() {
+        let b = HandBuilder::new()
+            .blinds(0.5, 1.0)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .straddle(1, 2.0)
+            .call(2, 2.0)
+            .call(3, 2.0)
+            .check(1)
+            .win(1, 6.0);
+
+        let hand = parse_single_hand(&b).unwrap();
+        // seat 1: straddle 2.0 is the max on preflop street
+        let inv1 = invested(&hand, 1);
+        assert!((inv1 - 2.0).abs() < 0.001, "straddle should be counted: {inv1}");
+        // seat 2: SB 0.5 then call 2.0, max = 2.0
+        let inv2 = invested(&hand, 2);
+        assert!((inv2 - 2.0).abs() < 0.001, "SB→call max = 2.0: {inv2}");
+        // net profit for winner
+        let net = net_profit(&hand, 1);
+        assert!((net - 4.0).abs() < 0.001, "net: {net}");
+    }
+
+    #[test]
+    fn straddle_not_vpip() {
+        let b = HandBuilder::new()
+            .blinds(0.5, 1.0)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .straddle(1, 2.0)
+            .fold(2)
+            .fold(3)
+            .win(1, 3.5);
+
+        let data = parse_game_data(&b);
+        let result = crate::stats::compute_stats(&data);
+        let alice = result.players.iter().find(|s| s.player_id == "p1").unwrap();
+        assert_eq!(alice.vpip_hands, 0, "straddle alone should not count as VPIP");
+    }
+
+    #[test]
+    fn straddle_bb_normalization() {
+        let b = HandBuilder::new()
+            .blinds(0.5, 1.0)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .straddle(1, 2.0)
+            .fold(2)
+            .fold(3)
+            .win(1, 3.5);
+
+        let data = parse_game_data(&b);
+        let result = crate::stats::compute_stats(&data);
+        let alice = result.players.iter().find(|s| s.player_id == "p1").unwrap();
+        // Alice invested 2.0 (straddle), won 3.5 → net +1.5 chips / 2.0 effective BB = +0.75
+        assert!(
+            (alice.net_bb - 0.75).abs() < 0.001,
+            "net_bb normalized by effective_bb (straddle amount): {}",
+            alice.net_bb
+        );
     }
 }

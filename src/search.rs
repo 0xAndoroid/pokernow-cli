@@ -40,7 +40,11 @@ pub fn search_hands(data: &GameData, filter: &SearchFilter) -> Vec<SearchResult>
             let (winner_name, winner_amount) = primary_winner(hand);
             let player_net_bb = filter.player.as_ref().map(|name| {
                 let seat = find_seat(hand, name).unwrap_or(0);
-                if hand.big_blind > 0.0 { net_profit(hand, seat) / hand.big_blind } else { 0.0 }
+                if hand.effective_bb > 0.0 {
+                    net_profit(hand, seat) / hand.effective_bb
+                } else {
+                    0.0
+                }
             });
             SearchResult {
                 hand_number: hand.number,
@@ -133,11 +137,11 @@ fn primary_winner(hand: &Hand) -> (String, f64) {
 }
 
 pub fn hand_pot_bb(hand: &Hand) -> f64 {
-    if hand.big_blind <= 0.0 {
+    if hand.effective_bb <= 0.0 {
         return 0.0;
     }
     let total: f64 = hand.winners.iter().map(|w| w.amount).sum();
-    total / hand.big_blind
+    total / hand.effective_bb
 }
 
 fn find_seat(hand: &Hand, name: &str) -> Option<u8> {

@@ -110,8 +110,8 @@ pub fn compute_stats(data: &GameData) -> StatsResult {
             });
 
             stats.hands_at_table += 1;
-            if hand.big_blind > 0.0 {
-                stats.net_bb += net_profit(hand, p.seat) / hand.big_blind;
+            if hand.effective_bb > 0.0 {
+                stats.net_bb += net_profit(hand, p.seat) / hand.effective_bb;
             }
 
             if !hand.bomb_pot {
@@ -454,7 +454,7 @@ fn process_all_in_ev(
     seat_to_id: &HashMap<u8, &str>,
     map: &mut HashMap<&str, PlayerStats>,
 ) {
-    if !hand.real_showdown || hand.big_blind <= 0.0 {
+    if !hand.real_showdown || hand.effective_bb <= 0.0 {
         return;
     }
 
@@ -563,7 +563,7 @@ fn process_all_in_ev(
         let actual_from_pot: f64 =
             hand.winners.iter().filter(|w| w.seat == seat).map(|w| w.amount).sum();
 
-        let ev_diff = (ev_expected[i] - actual_from_pot) / hand.big_blind;
+        let ev_diff = (ev_expected[i] - actual_from_pot) / hand.effective_bb;
 
         if let Some(id) = seat_to_id.get(&seat)
             && let Some(stats) = map.get_mut(*id)

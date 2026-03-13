@@ -9,7 +9,7 @@ const POSITION_ORDER: [Position; 6] =
 pub fn display_hand(hand: &Hand) {
     let seat_name = build_seat_name_map(hand);
     let hole_cards = build_hole_cards_map(hand);
-    let bb = hand.big_blind;
+    let bb = hand.effective_bb;
 
     print_header(hand, &seat_name);
     print_players(hand, &hole_cards, bb);
@@ -60,16 +60,22 @@ fn build_hole_cards_map(hand: &Hand) -> HashMap<u8, Vec<Card>> {
 
 fn print_header(hand: &Hand, seat_name: &HashMap<u8, String>) {
     let bomb = if hand.bomb_pot { " [BOMB POT]" } else { "" };
+    let straddle_tag = if hand.straddle_seat.is_some() {
+        format!(" [STR {}]", format_chips(hand.effective_bb))
+    } else {
+        String::new()
+    };
     let eff_stack = hand.players.iter().map(|p| p.stack).fold(f64::INFINITY, f64::min);
-    let eff_bb = if hand.big_blind > 0.0 { eff_stack / hand.big_blind } else { 0.0 };
+    let eff_bb = if hand.effective_bb > 0.0 { eff_stack / hand.effective_bb } else { 0.0 };
     println!(
-        "Hand #{} ({}) | Stakes {}/{} | {} players | Eff: {} BB{}",
+        "Hand #{} ({}) | Stakes {}/{} | {} players | Eff: {} BB{}{}",
         hand.number,
         hand.id,
         format_chips(hand.small_blind),
         format_chips(hand.big_blind),
         hand.players.len(),
         format_bb(eff_bb),
+        straddle_tag,
         bomb,
     );
 

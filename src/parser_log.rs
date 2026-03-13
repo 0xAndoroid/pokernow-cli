@@ -316,7 +316,7 @@ fn process_log_hand<S: std::hash::BuildHasher>(
             continue;
         }
 
-        if let Some(action) = parse_action(line, &orig_name_to_seat, &players)
+        if let Some(action) = parse_action(line, &orig_name_to_seat, &players, bb_amount)
             && let Some(current) = streets.last_mut()
         {
             current.actions.push(action);
@@ -350,11 +350,22 @@ fn process_log_hand<S: std::hash::BuildHasher>(
     let run_it_twice = false;
     let _ = (total_wins, unique_won_seats); // suppress unused warnings
 
+    let straddle =
+        streets.iter().flat_map(|sd| sd.actions.iter()).find(|a| a.kind == ActionType::Straddle);
+    let straddle_seat = straddle.map(|a| a.seat);
+    let effective_bb = straddle.map_or(big_blind, |a| a.amount);
+
+    // HU straddle anomaly: inferred SB > BB when the SB straddles
+    let small_blind =
+        if straddle_seat.is_some() && small_blind > big_blind { big_blind } else { small_blind };
+
     Some(Hand {
         id,
         number: 0, // filled in later
         small_blind,
         big_blind,
+        effective_bb,
+        straddle_seat,
         bomb_pot: false,
         players,
         streets,
@@ -472,6 +483,7 @@ fn parse_action(
     line: &str,
     name_to_seat: &HashMap<String, u8>,
     players: &[PlayerInHand],
+    bb_amount: f64,
 ) -> Option<Action> {
     let all_in = line.ends_with(" and go all in");
     let line = if all_in { &line[..line.len() - " and go all in".len()] } else { line };
@@ -483,6 +495,7 @@ fn parse_action(
         let kind = match pos {
             Position::SB => ActionType::SmallBlind,
             Position::BB => ActionType::BigBlind,
+            _ if bb_amount > 0.0 && amount > bb_amount => ActionType::Straddle,
             _ => ActionType::DeadBlind,
         };
         return Some(Action {
@@ -1113,6 +1126,56 @@ om won 2 chips
         // total invested = 10 + 1 = 11, won = 2, uncalled = 11 - 2 = 9
         let om_seat = 1_u8;
         assert!(hand.uncalled_returns.contains_key(&om_seat));
+    }
+
+    #[test]
+    fn straddle_detected_in_log() {
+        let input = "\
+No Limit Texas Hold'em - 2025/12/28 20:00:00 EST
+om {id: viPKe3plzj} (100, SB)
+kevin {id: lWyn_wrdD6} (100, BB)
+Andrew {id: wBcyK_YnY6} (100, BU)
+3 players are in the hand
+om posted 0.5
+kevin posted 1
+Andrew posted 2
+om folded
+kevin folded
+Andrew won 3.5 chips
+";
+        let file = write_temp_log(input);
+        let path = file.path().to_string_lossy().to_string();
+        let data = parse_log_files(&[path], &HashMap::new(), &[]).unwrap();
+
+        assert_eq!(data.hands.len(), 1);
+        let hand = &data.hands[0];
+        assert_eq!(hand.straddle_seat, Some(3)); // Andrew = seat 3 (third player)
+        assert!((hand.effective_bb - 2.0).abs() < f64::EPSILON);
+        assert!((hand.big_blind - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn dead_blind_not_mistaken_for_straddle() {
+        let input = "\
+No Limit Texas Hold'em - 2025/12/28 20:00:00 EST
+om {id: viPKe3plzj} (100, SB)
+kevin {id: lWyn_wrdD6} (100, BB)
+Andrew {id: wBcyK_YnY6} (100, BU)
+3 players are in the hand
+om posted 0.5
+kevin posted 1
+Andrew posted 1
+om folded
+kevin folded
+Andrew won 2.5 chips
+";
+        let file = write_temp_log(input);
+        let path = file.path().to_string_lossy().to_string();
+        let data = parse_log_files(&[path], &HashMap::new(), &[]).unwrap();
+
+        let hand = &data.hands[0];
+        assert!(hand.straddle_seat.is_none(), "posting BB amount is dead blind, not straddle");
+        assert!((hand.effective_bb - 1.0).abs() < f64::EPSILON);
     }
 
     fn write_temp_log(content: &str) -> tempfile::NamedTempFile {

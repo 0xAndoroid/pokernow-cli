@@ -3,12 +3,20 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct BlindRemap {
+    pub from: [f64; 2],
+    pub to: [f64; 2],
+}
+
 #[derive(Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub files: Vec<String>,
     #[serde(default)]
     pub unify: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub blind_remap: Vec<BlindRemap>,
 }
 
 impl Config {
@@ -49,6 +57,7 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 
@@ -156,5 +165,49 @@ bob = ["bob", "robert"]
         writeln!(tmp, "this is not valid toml [[[").unwrap();
         let result = Config::load(tmp.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_blind_remap() {
+        let toml = r"
+[[blind_remap]]
+from = [1.0, 1.0]
+to = [1.0, 2.0]
+
+[[blind_remap]]
+from = [0.5, 0.5]
+to = [0.5, 1.0]
+";
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.blind_remap.len(), 2);
+        assert_eq!(config.blind_remap[0].from, [1.0, 1.0]);
+        assert_eq!(config.blind_remap[0].to, [1.0, 2.0]);
+        assert_eq!(config.blind_remap[1].from, [0.5, 0.5]);
+        assert_eq!(config.blind_remap[1].to, [0.5, 1.0]);
+    }
+
+    #[test]
+    fn parse_config_without_blind_remap() {
+        let toml = r#"files = ["test.json"]"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.blind_remap.is_empty());
+    }
+
+    #[test]
+    fn parse_full_config_with_blind_remap() {
+        let toml = r#"
+files = ["game.json"]
+
+[unify]
+alice = ["alice", "alice2"]
+
+[[blind_remap]]
+from = [1.0, 1.0]
+to = [1.0, 2.0]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.files.len(), 1);
+        assert_eq!(config.unify.len(), 1);
+        assert_eq!(config.blind_remap.len(), 1);
     }
 }

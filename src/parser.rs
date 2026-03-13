@@ -5,6 +5,7 @@ use std::io::BufReader;
 use serde::Deserialize;
 
 use crate::card::Card;
+use crate::config::BlindRemap;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Position {
@@ -157,6 +158,7 @@ struct RawPayload {
 pub fn parse_files<S: std::hash::BuildHasher>(
     paths: &[String],
     unify: &HashMap<String, String, S>,
+    blind_remap: &[BlindRemap],
 ) -> Result<GameData, Box<dyn std::error::Error>> {
     let mut all_hands = Vec::new();
     let mut player_names: HashMap<String, String> = HashMap::new();
@@ -174,7 +176,7 @@ pub fn parse_files<S: std::hash::BuildHasher>(
                 player_names.entry(canonical.clone()).or_insert_with(|| rp.name.clone());
             }
 
-            if let Some(hand) = process_hand(&raw_hand, &id_unify) {
+            if let Some(hand) = process_hand(&raw_hand, &id_unify, blind_remap) {
                 all_hands.push(hand);
             }
         }
@@ -258,7 +260,20 @@ fn build_id_unify_map<S: std::hash::BuildHasher>(
     Ok(id_map)
 }
 
-fn process_hand(raw: &RawHand, id_unify: &HashMap<String, String>) -> Option<Hand> {
+fn apply_blind_remap(sb: f64, bb: f64, rules: &[BlindRemap]) -> (f64, f64) {
+    for rule in rules {
+        if (rule.from[0] - sb).abs() < f64::EPSILON && (rule.from[1] - bb).abs() < f64::EPSILON {
+            return (rule.to[0], rule.to[1]);
+        }
+    }
+    (sb, bb)
+}
+
+fn process_hand(
+    raw: &RawHand,
+    id_unify: &HashMap<String, String>,
+    blind_remap: &[BlindRemap],
+) -> Option<Hand> {
     if raw.game_type != "th" {
         return None;
     }
@@ -272,6 +287,7 @@ fn process_hand(raw: &RawHand, id_unify: &HashMap<String, String>) -> Option<Han
     let run_it_twice = has_multiple_runs(&raw.events);
 
     let number: u32 = raw.number.parse().unwrap_or(0);
+    let (small_blind, big_blind) = apply_blind_remap(raw.small_blind, raw.big_blind, blind_remap);
     let mut seats_sorted: Vec<u8> = raw.players.iter().map(|p| p.seat).collect();
     seats_sorted.sort_unstable();
     let positions = assign_positions(&seats_sorted, raw.dealer_seat);
@@ -322,8 +338,8 @@ fn process_hand(raw: &RawHand, id_unify: &HashMap<String, String>) -> Option<Han
     Some(Hand {
         id: raw.id.clone(),
         number,
-        small_blind: raw.small_blind,
-        big_blind: raw.big_blind,
+        small_blind,
+        big_blind,
         bomb_pot: raw.bomb_pot,
         players,
         streets,
@@ -914,20 +930,20 @@ pub mod test_helpers {
     pub fn parse_single_hand(builder: &HandBuilder) -> Option<Hand> {
         let tmp = builder.write_to_tmp();
         let path = tmp.path().to_string_lossy().to_string();
-        let data = parse_files(&[path], &HashMap::new()).unwrap();
+        let data = parse_files(&[path], &HashMap::new(), &[]).unwrap();
         data.hands.into_iter().next()
     }
 
     pub fn parse_game_data(builder: &HandBuilder) -> GameData {
         let tmp = builder.write_to_tmp();
         let path = tmp.path().to_string_lossy().to_string();
-        parse_files(&[path], &HashMap::new()).unwrap()
+        parse_files(&[path], &HashMap::new(), &[]).unwrap()
     }
 
     pub fn parse_multi_game_data(builders: &[&HandBuilder]) -> GameData {
         let tmp = HandBuilder::write_multi_to_tmp(builders);
         let path = tmp.path().to_string_lossy().to_string();
-        parse_files(&[path], &HashMap::new()).unwrap()
+        parse_files(&[path], &HashMap::new(), &[]).unwrap()
     }
 
     pub fn parse_game_data_with_unify<S: std::hash::BuildHasher>(
@@ -936,7 +952,7 @@ pub mod test_helpers {
     ) -> GameData {
         let tmp = builder.write_to_tmp();
         let path = tmp.path().to_string_lossy().to_string();
-        parse_files(&[path], unify).unwrap()
+        parse_files(&[path], unify, &[]).unwrap()
     }
 
     pub fn parse_multi_game_data_with_unify<S: std::hash::BuildHasher>(
@@ -945,7 +961,16 @@ pub mod test_helpers {
     ) -> GameData {
         let tmp = HandBuilder::write_multi_to_tmp(builders);
         let path = tmp.path().to_string_lossy().to_string();
-        parse_files(&[path], unify).unwrap()
+        parse_files(&[path], unify, &[]).unwrap()
+    }
+
+    pub fn parse_game_data_with_remap(
+        builder: &HandBuilder,
+        blind_remap: &[crate::config::BlindRemap],
+    ) -> GameData {
+        let tmp = builder.write_to_tmp();
+        let path = tmp.path().to_string_lossy().to_string();
+        parse_files(&[path], &HashMap::new(), blind_remap).unwrap()
     }
 }
 
@@ -991,7 +1016,7 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::io::Write::write_all(&mut &tmp, json.as_bytes()).unwrap();
         let path = tmp.path().to_string_lossy().to_string();
-        let data = parse_files(&[path], &std::collections::HashMap::new()).unwrap();
+        let data = parse_files(&[path], &std::collections::HashMap::new(), &[]).unwrap();
         assert!(data.hands.is_empty());
     }
 
@@ -1576,6 +1601,84 @@ mod tests {
             player_ids.iter().filter(|&&id| id != "id_bob").count(),
             1,
             "should be exactly one non-Bob player ID after unification"
+        );
+    }
+
+    #[test]
+    fn blind_remap_applied() {
+        let b = HandBuilder::new()
+            .blinds(1.0, 1.0)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 1.0)
+            .bb(2, 1.0)
+            .fold(1)
+            .win(2, 2.0);
+
+        let remap = vec![crate::config::BlindRemap {
+            from: [1.0, 1.0],
+            to: [1.0, 2.0],
+        }];
+        let data = parse_game_data_with_remap(&b, &remap);
+        let hand = &data.hands[0];
+        assert_eq!(hand.small_blind, 1.0);
+        assert_eq!(hand.big_blind, 2.0);
+    }
+
+    #[test]
+    fn blind_remap_no_match_unchanged() {
+        let b = HandBuilder::new()
+            .blinds(0.5, 1.0)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .win(2, 1.5);
+
+        let remap = vec![crate::config::BlindRemap {
+            from: [1.0, 1.0],
+            to: [1.0, 2.0],
+        }];
+        let data = parse_game_data_with_remap(&b, &remap);
+        let hand = &data.hands[0];
+        assert_eq!(hand.small_blind, 0.5);
+        assert_eq!(hand.big_blind, 1.0);
+    }
+
+    #[test]
+    fn blind_remap_affects_bb_normalized_stats() {
+        let b = HandBuilder::new()
+            .blinds(1.0, 1.0)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 1.0)
+            .bb(2, 1.0)
+            .call(1, 1.0)
+            .check(2)
+            .win(1, 2.0);
+
+        let no_remap = parse_game_data(&b);
+        let stats_no = crate::stats::compute_stats(&no_remap);
+        let s1_no = stats_no.iter().find(|s| s.player_id == "p1").unwrap();
+
+        let remap = vec![crate::config::BlindRemap {
+            from: [1.0, 1.0],
+            to: [1.0, 2.0],
+        }];
+        let with_remap = parse_game_data_with_remap(&b, &remap);
+        let stats_yes = crate::stats::compute_stats(&with_remap);
+        let s1_yes = stats_yes.iter().find(|s| s.player_id == "p1").unwrap();
+
+        // net_bb should be halved: same chip profit, double the BB
+        assert!(
+            (s1_no.net_bb - s1_yes.net_bb * 2.0).abs() < 0.001,
+            "no_remap={}, with_remap={}",
+            s1_no.net_bb,
+            s1_yes.net_bb,
         );
     }
 }

@@ -4,7 +4,7 @@ use std::process;
 
 use clap::{Parser, Subcommand};
 
-use poker_cli::config::Config;
+use poker_cli::config::{BlindRemap, Config};
 use poker_cli::display;
 use poker_cli::parser;
 use poker_cli::search::{self, SearchFilter, SortField};
@@ -132,7 +132,7 @@ fn resolve_files_and_unify(
     cli_files: Vec<String>,
     cli_unify: Option<String>,
     no_config: bool,
-) -> (Vec<String>, HashMap<String, String>, bool) {
+) -> (Vec<String>, HashMap<String, String>, Vec<BlindRemap>, bool) {
     let config = if no_config { None } else { load_config() };
     let from_config = config.is_some() && cli_files.is_empty();
 
@@ -148,7 +148,9 @@ fn resolve_files_and_unify(
         config.as_ref().map_or_else(HashMap::new, Config::unify_map)
     };
 
-    (files, unify, from_config)
+    let blind_remap = config.as_ref().map_or_else(Vec::new, |c| c.blind_remap.clone());
+
+    (files, unify, blind_remap, from_config)
 }
 
 fn load_config() -> Option<Config> {
@@ -208,7 +210,7 @@ fn main() {
         Command::Summary { files } => (files.files, CliAction::Summary),
     };
 
-    let (files, unify_map, from_config) =
+    let (files, unify_map, blind_remap, from_config) =
         resolve_files_and_unify(files, cli.unify_players, no_config);
 
     if files.is_empty() {
@@ -224,7 +226,7 @@ fn main() {
         eprintln!("Loaded {} file(s) from config.toml", files.len());
     }
 
-    let data = match parser::parse_files(&files, &unify_map) {
+    let data = match parser::parse_files(&files, &unify_map, &blind_remap) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("Failed to parse hand history: {e}");

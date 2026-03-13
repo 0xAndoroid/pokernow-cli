@@ -10,8 +10,20 @@ pub fn print_summary(data: &GameData) {
     }
 
     let stakes: String = {
-        let first = &data.hands[0];
-        format!("{}/{}", format_chips(first.small_blind), format_chips(first.big_blind))
+        let mut levels: Vec<(f64, f64)> = Vec::new();
+        for h in &data.hands {
+            let pair = (h.small_blind, h.big_blind);
+            if !levels.iter().any(|(s, b)| {
+                (*s - pair.0).abs() < f64::EPSILON && (*b - pair.1).abs() < f64::EPSILON
+            }) {
+                levels.push(pair);
+            }
+        }
+        levels
+            .iter()
+            .map(|(sb, bb)| format!("{}/{}", format_chips(*sb), format_chips(*bb)))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
 
     println!("Session Summary");
@@ -92,6 +104,34 @@ mod tests {
             hands: Vec::new(),
             player_names: std::collections::HashMap::new(),
         };
+        print_summary(&data);
+    }
+
+    #[test]
+    fn summary_mixed_blinds_no_panic() {
+        let h1 = HandBuilder::new()
+            .blinds(0.5, 1.0)
+            .number(1)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .win(2, 1.5);
+
+        let h2 = HandBuilder::new()
+            .blinds(1.0, 2.0)
+            .number(2)
+            .player("p1", 1, "Alice", 200.0)
+            .player("p2", 2, "Bob", 200.0)
+            .dealer(1)
+            .sb(1, 1.0)
+            .bb(2, 2.0)
+            .fold(1)
+            .win(2, 3.0);
+
+        let data = parse_multi_game_data(&[&h1, &h2]);
         print_summary(&data);
     }
 }

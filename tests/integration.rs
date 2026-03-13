@@ -12,7 +12,7 @@ fn fixture_path(filename: &str) -> PathBuf {
 fn load_fixture(filename: &str) -> parser::GameData {
     let path = fixture_path(filename);
     assert!(path.exists(), "Fixture not found: {}", path.display());
-    parser::parse_files(&[path.to_string_lossy().into_owned()], &HashMap::new()).unwrap()
+    parser::parse_files(&[path.to_string_lossy().into_owned()], &HashMap::new(), &[]).unwrap()
 }
 
 #[test]
@@ -151,6 +151,7 @@ fn load_multiple_files() {
     let data = parser::parse_files(
         &[path1.to_string_lossy().into_owned(), path2.to_string_lossy().into_owned()],
         &HashMap::new(),
+        &[],
     )
     .unwrap();
 
@@ -163,7 +164,7 @@ fn load_multiple_files() {
 fn player_unification_merges_ids() {
     let path = fixture_path("sample.json");
     let data_no_unify =
-        parser::parse_files(&[path.to_string_lossy().into_owned()], &HashMap::new()).unwrap();
+        parser::parse_files(&[path.to_string_lossy().into_owned()], &HashMap::new(), &[]).unwrap();
 
     let stats_no_unify = stats::compute_stats(&data_no_unify);
     let player_count_before = stats_no_unify.len();
@@ -173,7 +174,7 @@ fn player_unification_merges_ids() {
         unify.insert(first.name.clone(), first.name.clone());
     }
     let data_with_unify =
-        parser::parse_files(&[path.to_string_lossy().into_owned()], &unify).unwrap();
+        parser::parse_files(&[path.to_string_lossy().into_owned()], &unify, &[]).unwrap();
     let stats_with_unify = stats::compute_stats(&data_with_unify);
     assert_eq!(stats_with_unify.len(), player_count_before);
 }

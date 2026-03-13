@@ -114,6 +114,8 @@ struct RawHand {
     big_blind: f64,
     #[allow(dead_code)]
     ante: Option<f64>,
+    #[serde(default)]
+    cents: bool,
     straddle_seat: Option<u8>,
     dealer_seat: u8,
     bomb_pot: bool,
@@ -288,9 +290,11 @@ fn process_hand(
 
     let run_it_twice = has_multiple_runs(&raw.events);
 
+    let scale = if raw.cents { 0.01 } else { 1.0 };
+
     let number: u32 = raw.number.parse().unwrap_or(0);
     let (mut small_blind, big_blind) =
-        apply_blind_remap(raw.small_blind, raw.big_blind, blind_remap);
+        apply_blind_remap(raw.small_blind * scale, raw.big_blind * scale, blind_remap);
 
     // HU straddle anomaly: PokerNow reports SB > BB when the SB straddles
     if raw.straddle_seat.is_some() && small_blind > big_blind {
@@ -317,7 +321,7 @@ fn process_hand(
                 id,
                 seat: rp.seat,
                 name: rp.name.clone(),
-                stack: rp.stack,
+                stack: rp.stack * scale,
                 hole_cards: hole,
                 position: pos,
             }
@@ -330,7 +334,7 @@ fn process_hand(
         uncalled_returns,
         show_count,
         run2_cards,
-    } = process_events(&raw.events, &mut shown_cards);
+    } = process_events(&raw.events, &mut shown_cards, scale);
 
     remove_spurious_folds(&raw.events, &mut streets);
 
@@ -466,6 +470,7 @@ struct ProcessedEvents {
 fn process_events(
     events: &[RawEvent],
     shown_cards: &mut HashMap<u8, Vec<Card>>,
+    scale: f64,
 ) -> ProcessedEvents {
     let mut streets = vec![StreetData {
         street: Street::Preflop,
@@ -507,7 +512,7 @@ fn process_events(
             let action = Action {
                 seat,
                 kind,
-                amount: p.value.unwrap_or(0.0),
+                amount: p.value.unwrap_or(0.0) * scale,
                 all_in: p.all_in.unwrap_or(false),
             };
             if let Some(current) = streets.last_mut() {
@@ -529,7 +534,7 @@ fn process_events(
                 let run: u8 = p.run_number.as_deref().and_then(|s| s.parse().ok()).unwrap_or(1);
                 winners.push(Winner {
                     seat,
-                    amount: p.value.unwrap_or(0.0),
+                    amount: p.value.unwrap_or(0.0) * scale,
                     cards,
                     hand_description: p.hand_description.clone(),
                     run,
@@ -548,7 +553,7 @@ fn process_events(
             }
             16 => {
                 if let (Some(seat), Some(val)) = (p.seat, p.value) {
-                    *uncalled_returns.entry(seat).or_insert(0.0) += val;
+                    *uncalled_returns.entry(seat).or_insert(0.0) += val * scale;
                 }
             }
             _ => {}
@@ -716,6 +721,7 @@ pub mod test_helpers {
         game_type: String,
         small_blind: f64,
         big_blind: f64,
+        cents: bool,
         straddle_seat: Option<u8>,
         dealer_seat: u8,
         bomb_pot: bool,
@@ -737,6 +743,7 @@ pub mod test_helpers {
                 game_type: "th".into(),
                 small_blind: 0.5,
                 big_blind: 1.0,
+                cents: false,
                 straddle_seat: None,
                 dealer_seat: 1,
                 bomb_pot: false,
@@ -763,6 +770,11 @@ pub mod test_helpers {
         pub fn blinds(mut self, sb: f64, bb: f64) -> Self {
             self.small_blind = sb;
             self.big_blind = bb;
+            self
+        }
+
+        pub fn cents(mut self) -> Self {
+            self.cents = true;
             self
         }
 
@@ -932,6 +944,7 @@ pub mod test_helpers {
                 "smallBlind": self.small_blind,
                 "bigBlind": self.big_blind,
                 "ante": null,
+                "cents": self.cents,
                 "straddleSeat": self.straddle_seat,
                 "dealerSeat": self.dealer_seat,
                 "bombPot": self.bomb_pot,
@@ -976,6 +989,7 @@ pub mod test_helpers {
                         "smallBlind": b.small_blind,
                         "bigBlind": b.big_blind,
                         "ante": null,
+                        "cents": b.cents,
                         "straddleSeat": b.straddle_seat,
                         "dealerSeat": b.dealer_seat,
                         "bombPot": b.bomb_pot,
@@ -1992,5 +2006,43 @@ mod tests {
             "net_bb normalized by effective_bb (straddle amount): {}",
             alice.net_bb
         );
+    }
+
+    #[test]
+    fn cents_divides_all_monetary_values() {
+        let b = HandBuilder::new()
+            .blinds(100.0, 100.0)
+            .cents()
+            .player("p1", 1, "Alice", 10000.0)
+            .player("p2", 2, "Bob", 10000.0)
+            .player("p3", 3, "Charlie", 10000.0)
+            .dealer(1)
+            .sb(2, 100.0)
+            .bb(3, 100.0)
+            .bet(1, 300.0)
+            .fold(2)
+            .call(3, 300.0)
+            .flop(&["Ah", "Kd", "Qs"])
+            .check(3)
+            .bet(1, 400.0)
+            .fold(3)
+            .uncalled_return(1, 400.0)
+            .win(1, 700.0);
+
+        let hand = parse_single_hand(&b).unwrap();
+        assert_eq!(hand.small_blind, 1.0);
+        assert_eq!(hand.big_blind, 1.0);
+        assert_eq!(hand.effective_bb, 1.0);
+        assert_eq!(hand.players[0].stack, 100.0);
+        assert_eq!(hand.winners[0].amount, 7.0);
+        assert_eq!(*hand.uncalled_returns.get(&1).unwrap(), 4.0);
+
+        let preflop = &hand.streets[0];
+        let sb_action = preflop.actions.iter().find(|a| a.kind == ActionType::SmallBlind).unwrap();
+        assert_eq!(sb_action.amount, 1.0);
+        let raise = preflop.actions.iter().find(|a| a.kind == ActionType::Bet).unwrap();
+        assert_eq!(raise.amount, 3.0);
+
+        assert!((net_profit(&hand, 1) - 4.0).abs() < 0.001);
     }
 }

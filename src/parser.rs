@@ -1702,7 +1702,7 @@ mod tests {
 
         let no_remap = parse_game_data(&b);
         let stats_no = crate::stats::compute_stats(&no_remap);
-        let s1_no = stats_no.iter().find(|s| s.player_id == "p1").unwrap();
+        let s1_no = stats_no.players.iter().find(|s| s.player_id == "p1").unwrap();
 
         let remap = vec![crate::config::BlindRemap {
             from: [1.0, 1.0],
@@ -1710,7 +1710,7 @@ mod tests {
         }];
         let with_remap = parse_game_data_with_remap(&b, &remap);
         let stats_yes = crate::stats::compute_stats(&with_remap);
-        let s1_yes = stats_yes.iter().find(|s| s.player_id == "p1").unwrap();
+        let s1_yes = stats_yes.players.iter().find(|s| s.player_id == "p1").unwrap();
 
         // net_bb should be halved: same chip profit, double the BB
         assert!(

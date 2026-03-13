@@ -36,11 +36,11 @@ pub fn print_summary(data: &GameData) {
         println!("Biggest pot: {:.1} BB (Hand #{})", hand_pot_bb(h), h.number);
     }
 
-    let stats = compute_stats(data);
+    let result = compute_stats(data);
     println!();
     println!("{:<16} {:>10} {:>8} {:>8} {:>10}", "Player", "P&L (BB)", "VPIP", "PFR", "BB/hand");
     println!("{}", "-".repeat(56));
-    for s in &stats {
+    for s in &result.players {
         let bb_per_hand =
             if s.hands_at_table > 0 { s.net_bb / f64::from(s.hands_at_table) } else { 0.0 };
         let vpip = fmt_pct(s.vpip_hands, s.hands_played);
@@ -55,11 +55,11 @@ pub fn print_summary(data: &GameData) {
         println!("{:<16} {:>10} {:>8} {:>8} {:>10}", s.name, pnl, vpip, pfr, bbh);
     }
 
-    if let Some(winner) = stats.first() {
+    if let Some(winner) = result.players.first() {
         println!();
         println!("Biggest winner: {} ({:+.1} BB)", winner.name, winner.net_bb);
     }
-    if let Some(loser) = stats.last()
+    if let Some(loser) = result.players.last()
         && loser.net_bb < 0.0
     {
         println!("Biggest loser:  {} ({:.1} BB)", loser.name, loser.net_bb);

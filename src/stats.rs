@@ -93,7 +93,12 @@ fn get_hole_cards(hand: &Hand, seat: u8) -> Option<&Vec<Card>> {
     hand.players.iter().find(|p| p.seat == seat).and_then(|p| p.hole_cards.as_ref())
 }
 
-pub fn compute_stats(data: &GameData) -> Vec<PlayerStats> {
+pub struct StatsResult {
+    pub total_hands: usize,
+    pub players: Vec<PlayerStats>,
+}
+
+pub fn compute_stats(data: &GameData) -> StatsResult {
     let mut map: HashMap<&str, PlayerStats> = HashMap::new();
 
     for hand in &data.hands {
@@ -125,9 +130,12 @@ pub fn compute_stats(data: &GameData) -> Vec<PlayerStats> {
         process_all_in_ev(hand, &seat_to_id, &mut map);
     }
 
-    let mut result: Vec<PlayerStats> = map.into_values().collect();
-    result.sort_unstable_by(|a, b| b.net_bb.total_cmp(&a.net_bb));
-    result
+    let mut players: Vec<PlayerStats> = map.into_values().collect();
+    players.sort_unstable_by(|a, b| b.net_bb.total_cmp(&a.net_bb));
+    StatsResult {
+        total_hands: data.hands.len(),
+        players,
+    }
 }
 
 fn process_preflop(
@@ -778,7 +786,7 @@ fn fmt_bb(v: f64) -> String {
     if v >= 0.0 { format!("+{v:.1}") } else { format!("{v:.1}") }
 }
 
-fn print_player_stats(s: &PlayerStats, rank: Option<usize>) {
+fn print_player_stats(s: &PlayerStats, rank: Option<usize>, total_hands: usize) {
     let bb_per_hand =
         if s.hands_at_table > 0 { s.net_bb / f64::from(s.hands_at_table) } else { 0.0 };
 
@@ -787,7 +795,7 @@ fn print_player_stats(s: &PlayerStats, rank: Option<usize>) {
     } else {
         println!("{} (ID: {})", s.name, s.player_id);
     }
-    println!("   Hands: {}/{} (played/total)", s.hands_played, s.hands_at_table);
+    println!("   Hands: {}/{} (dealt/total)", s.hands_at_table, total_hands);
     println!("   P&L: {} BB ({} BB/hand)", fmt_bb(s.net_bb), fmt_bb(bb_per_hand));
     println!();
 
@@ -844,20 +852,20 @@ fn print_player_stats(s: &PlayerStats, rank: Option<usize>) {
     println!();
 }
 
-pub fn print_stats(stats: &[PlayerStats]) {
+pub fn print_stats(result: &StatsResult) {
     println!("Player Stats (ranked by P&L)");
     println!("============================\n");
 
-    for (rank, s) in stats.iter().enumerate() {
-        print_player_stats(s, Some(rank));
+    for (rank, s) in result.players.iter().enumerate() {
+        print_player_stats(s, Some(rank), result.total_hands);
     }
 }
 
-pub fn print_single_player_stats(stats: &[PlayerStats], name: &str) {
+pub fn print_single_player_stats(result: &StatsResult, name: &str) {
     let lower = name.to_ascii_lowercase();
-    let found = stats.iter().find(|s| s.name.to_ascii_lowercase() == lower);
+    let found = result.players.iter().find(|s| s.name.to_ascii_lowercase() == lower);
     match found {
-        Some(s) => print_player_stats(s, None),
+        Some(s) => print_player_stats(s, None, result.total_hands),
         None => eprintln!("Player '{name}' not found in stats"),
     }
 }
@@ -868,8 +876,8 @@ mod tests {
     use crate::parser::test_helpers::*;
 
     fn stats_for(data: &crate::parser::GameData, id: &str) -> PlayerStats {
-        let all = compute_stats(data);
-        all.into_iter().find(|s| s.player_id == id).unwrap()
+        let result = compute_stats(data);
+        result.players.into_iter().find(|s| s.player_id == id).unwrap()
     }
 
     // --- VPIP / PFR ---
@@ -1537,7 +1545,59 @@ mod tests {
             .win(2, 1.5);
 
         let data = parse_game_data(&b);
-        let stats = compute_stats(&data);
-        print_stats(&stats);
+        let result = compute_stats(&data);
+        print_stats(&result);
+    }
+
+    #[test]
+    fn total_hands_reflects_dataset_size() {
+        let h1 = HandBuilder::new()
+            .number(1)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0)
+            .fold(2)
+            .fold(3)
+            .win(1, 4.5);
+
+        // p3 sits out hand 2 (not in players list)
+        let h2 = HandBuilder::new()
+            .number(2)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(1, 1.0)
+            .fold(2)
+            .win(1, 1.5);
+
+        // p1 and p3 sit out hand 3
+        let h3 = HandBuilder::new()
+            .number(3)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p4", 4, "Dave", 100.0)
+            .dealer(2)
+            .sb(4, 0.5)
+            .bb(2, 1.0)
+            .fold(4)
+            .win(2, 1.5);
+
+        let data = parse_multi_game_data(&[&h1, &h2, &h3]);
+        let result = compute_stats(&data);
+
+        assert_eq!(result.total_hands, 3);
+
+        let alice = result.players.iter().find(|s| s.player_id == "p1").unwrap();
+        assert_eq!(alice.hands_at_table, 2); // dealt into hands 1,2
+        let bob = result.players.iter().find(|s| s.player_id == "p2").unwrap();
+        assert_eq!(bob.hands_at_table, 3); // dealt into all 3
+        let charlie = result.players.iter().find(|s| s.player_id == "p3").unwrap();
+        assert_eq!(charlie.hands_at_table, 1); // dealt into hand 1 only
+        let dave = result.players.iter().find(|s| s.player_id == "p4").unwrap();
+        assert_eq!(dave.hands_at_table, 1); // dealt into hand 3 only
     }
 }

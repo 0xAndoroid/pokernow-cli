@@ -43,10 +43,11 @@ fn positions_always_assigned() {
 #[test]
 fn stats_computation_on_real_data() {
     let data = load_fixture("sample.json");
-    let all_stats = stats::compute_stats(&data);
-    assert!(!all_stats.is_empty(), "should compute stats for at least one player");
+    let result = stats::compute_stats(&data);
+    assert_eq!(result.total_hands, data.hands.len());
+    assert!(!result.players.is_empty(), "should compute stats for at least one player");
 
-    for s in &all_stats {
+    for s in &result.players {
         assert!(s.hands_played > 0);
         let vpip_rate = f64::from(s.vpip_hands) / f64::from(s.hands_played);
         assert!((0.0..=1.0).contains(&vpip_rate), "VPIP must be 0-100%");
@@ -65,8 +66,8 @@ fn stats_computation_on_real_data() {
 #[test]
 fn net_pnl_sums_to_zero() {
     let data = load_fixture("sample.json");
-    let all_stats = stats::compute_stats(&data);
-    let total: f64 = all_stats.iter().map(|s| s.net_bb).sum();
+    let result = stats::compute_stats(&data);
+    let total: f64 = result.players.iter().map(|s| s.net_bb).sum();
     assert!(total.abs() < 1.0, "total P&L across all players should sum near zero, got {total:.2}");
 }
 
@@ -166,17 +167,17 @@ fn player_unification_merges_ids() {
     let data_no_unify =
         parser::parse_files(&[path.to_string_lossy().into_owned()], &HashMap::new(), &[]).unwrap();
 
-    let stats_no_unify = stats::compute_stats(&data_no_unify);
-    let player_count_before = stats_no_unify.len();
+    let result_no_unify = stats::compute_stats(&data_no_unify);
+    let player_count_before = result_no_unify.players.len();
 
     let mut unify = HashMap::new();
-    if let Some(first) = stats_no_unify.first() {
+    if let Some(first) = result_no_unify.players.first() {
         unify.insert(first.name.clone(), first.name.clone());
     }
     let data_with_unify =
         parser::parse_files(&[path.to_string_lossy().into_owned()], &unify, &[]).unwrap();
-    let stats_with_unify = stats::compute_stats(&data_with_unify);
-    assert_eq!(stats_with_unify.len(), player_count_before);
+    let result_with_unify = stats::compute_stats(&data_with_unify);
+    assert_eq!(result_with_unify.players.len(), player_count_before);
 }
 
 #[test]
@@ -192,6 +193,6 @@ fn display_hand_from_real_data() {
 #[test]
 fn print_stats_from_real_data() {
     let data = load_fixture("sample.json");
-    let all_stats = stats::compute_stats(&data);
-    stats::print_stats(&all_stats);
+    let result = stats::compute_stats(&data);
+    stats::print_stats(&result);
 }

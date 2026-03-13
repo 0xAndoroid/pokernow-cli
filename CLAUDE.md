@@ -6,7 +6,7 @@ PokerNow hand history analyzer. Rust CLI that parses JSON exports from [pokernow
 
 ```bash
 cargo build --release
-cargo test              # 146 tests (134 unit + 12 integration)
+cargo test              # 251 tests (239 unit + 12 integration)
 cargo clippy            # pedantic lints enabled — must be warning-free
 cargo fmt -- --check    # must pass
 cargo llvm-cov --summary-only  # coverage report (~92% line coverage)
@@ -38,7 +38,7 @@ src/summary.rs   Compact session summary: hand count, P&L table, biggest pot.
 
 ## Config file
 
-`config.toml` in the working directory. CLI args override config values. Use `--no-config` to disable loading.
+`config.toml` in the working directory. CLI args override config values. Use `--no-config` to disable loading. Use `gen-config` subcommand to generate a template.
 
 ```toml
 files = [
@@ -49,10 +49,20 @@ files = [
 [unify]
 pranav = ["pranav", "pranavv"]
 andrew = ["Andrew", "aryan"]
+
+chips = false
+format = "short,full"
+
+[[blind_remap]]
+from = [1.0, 0.5]
+to = [1.0, 1.0]
 ```
 
 - `files`: default hand history files when none given on CLI. Supports `~` expansion.
 - `[unify]`: player unification. Key = canonical name, value = list of aliases.
+- `chips`: display values in raw chips instead of BB. CLI `--chips` overrides.
+- `format`: table size filter (hu, short, full). CLI `--format` overrides.
+- `[[blind_remap]]`: blind level normalization. CLI `--blind-remap` overrides.
 
 When config is loaded, prints "Loaded N file(s) from config.toml" to stderr.
 

@@ -88,9 +88,29 @@ poker-cli --unify-players "Andrew,aryan;Steve,steveooooo" stats session.json
 
 The first name in each group becomes the canonical identity. Semicolons separate groups.
 
+### Global flags
+
+```
+poker-cli --chips stats session.json               # raw chip amounts instead of BB
+poker-cli --format hu,short,full stats session.json # include heads-up hands
+poker-cli --blind-remap "0.5/1:1/1,2/1:1/2" stats session.json
+```
+
+- `--chips` — display values in raw chip amounts instead of BB
+- `--format <sizes>` — filter by table size: `hu` (2), `short` (3-6), `full` (7+). Comma-separated. Default: `short,full`
+- `--blind-remap <rules>` — normalize non-standard blind levels. Format: `from_sb/from_bb:to_sb/to_bb,...`. Overrides config.
+
+### Generate config
+
+```
+poker-cli gen-config
+```
+
+Generates a fully-commented default `config.toml` with all options. Errors if `config.toml` already exists.
+
 ## Config file
 
-Create `config.toml` in the working directory to set defaults:
+Create `config.toml` in the working directory to set defaults. Use `poker-cli gen-config` to generate a template.
 
 ```toml
 # Default files when none given on CLI (supports ~ expansion)
@@ -103,9 +123,20 @@ files = [
 [unify]
 pranav = ["pranav", "pranavv"]
 andrew = ["Andrew", "aryan"]
+
+# Display values in raw chips instead of BB
+# chips = false
+
+# Table size filter: hu, short, full (comma-separated)
+# format = "short,full"
+
+# Blind remapping — normalize non-standard blind levels
+# [[blind_remap]]
+# from = [1.0, 0.5]
+# to = [1.0, 1.0]
 ```
 
-CLI arguments override config values. If files are given on the command line, `config.toml` files are ignored. If `--unify-players` is passed, the config `[unify]` section is ignored.
+CLI arguments override config values. If files are given on the command line, `config.toml` files are ignored. If `--unify-players` is passed, the config `[unify]` section is ignored. `--blind-remap` on CLI overrides config blind_remap. `--chips` on CLI enables chips mode even if config says false.
 
 Use `--no-config` to skip loading `config.toml` entirely. When config files are loaded, a "Loaded N file(s) from config.toml" message is printed to stderr.
 
@@ -128,7 +159,7 @@ src/
 - Only Texas Hold'em hands are supported
 - Omaha, bomb pots, and double-board games are filtered out
 - Run-it-twice hands are supported (first run for stats, both runs displayed)
-- 146 tests with ~92% line coverage. Run `cargo test` and `cargo llvm-cov`
+- 251 tests with ~92% line coverage. Run `cargo test` and `cargo llvm-cov`
 
 ## Input format
 

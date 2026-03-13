@@ -17,6 +17,10 @@ pub struct Config {
     pub unify: HashMap<String, Vec<String>>,
     #[serde(default)]
     pub blind_remap: Vec<BlindRemap>,
+    #[serde(default)]
+    pub chips: bool,
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 impl Config {
@@ -191,6 +195,27 @@ to = [0.5, 1.0]
         let toml = r#"files = ["test.json"]"#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.blind_remap.is_empty());
+    }
+
+    #[test]
+    fn parse_chips_option() {
+        let config: Config = toml::from_str("chips = true").unwrap();
+        assert!(config.chips);
+
+        let config: Config = toml::from_str("chips = false").unwrap();
+        assert!(!config.chips);
+
+        let config: Config = toml::from_str("").unwrap();
+        assert!(!config.chips);
+    }
+
+    #[test]
+    fn parse_format_option() {
+        let config: Config = toml::from_str(r#"format = "hu,short""#).unwrap();
+        assert_eq!(config.format.as_deref(), Some("hu,short"));
+
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.format.is_none());
     }
 
     #[test]

@@ -40,12 +40,16 @@ struct Cli {
     log_format: Option<LogFormat>,
 
     /// Filter by table size: hu (2), short (3-6), full (7+). Comma-separated.
-    #[arg(long, default_value = "short,full")]
-    format: String,
+    #[arg(long)]
+    format: Option<String>,
 
     /// Display values in raw chip amounts instead of BB
     #[arg(long)]
     chips: bool,
+
+    /// Blind remapping (format: "from_sb/from_bb:to_sb/to_bb,...")
+    #[arg(long)]
+    blind_remap: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -117,6 +121,8 @@ enum Command {
         #[command(flatten)]
         files: FileArgs,
     },
+    /// Generate a default config.toml with all options
+    GenConfig,
 }
 
 fn build_unify_map(spec: &str) -> HashMap<String, String> {
@@ -162,11 +168,37 @@ enum CliAction {
     Summary,
 }
 
-fn resolve_files_and_unify(
+fn parse_blind_remap_arg(s: &str) -> Vec<BlindRemap> {
+    s.split(',')
+        .filter_map(|pair| {
+            let (from_str, to_str) = pair.split_once(':')?;
+            let (from_sb, from_bb) = from_str.split_once('/')?;
+            let (to_sb, to_bb) = to_str.split_once('/')?;
+            Some(BlindRemap {
+                from: [from_sb.parse().ok()?, from_bb.parse().ok()?],
+                to: [to_sb.parse().ok()?, to_bb.parse().ok()?],
+            })
+        })
+        .collect()
+}
+
+struct ResolvedConfig {
+    files: Vec<String>,
+    unify: HashMap<String, String>,
+    blind_remap: Vec<BlindRemap>,
+    from_config: bool,
+    chips: bool,
+    format: String,
+}
+
+fn resolve_config(
     cli_files: Vec<String>,
     cli_unify: Option<String>,
+    cli_blind_remap: Option<String>,
+    cli_chips: bool,
+    cli_format: Option<String>,
     no_config: bool,
-) -> (Vec<String>, HashMap<String, String>, Vec<BlindRemap>, bool) {
+) -> ResolvedConfig {
     let config = if no_config { None } else { load_config() };
     let from_config = config.is_some() && cli_files.is_empty();
 
@@ -182,9 +214,26 @@ fn resolve_files_and_unify(
         config.as_ref().map_or_else(HashMap::new, Config::unify_map)
     };
 
-    let blind_remap = config.as_ref().map_or_else(Vec::new, |c| c.blind_remap.clone());
+    let blind_remap = if let Some(spec) = cli_blind_remap {
+        parse_blind_remap_arg(&spec)
+    } else {
+        config.as_ref().map_or_else(Vec::new, |c| c.blind_remap.clone())
+    };
 
-    (files, unify, blind_remap, from_config)
+    let chips = cli_chips || config.as_ref().is_some_and(|c| c.chips);
+
+    let format = cli_format.unwrap_or_else(|| {
+        config.as_ref().and_then(|c| c.format.clone()).unwrap_or_else(|| "short,full".to_string())
+    });
+
+    ResolvedConfig {
+        files,
+        unify,
+        blind_remap,
+        from_config,
+        chips,
+        format,
+    }
 }
 
 fn load_config() -> Option<Config> {
@@ -199,6 +248,36 @@ fn load_config() -> Option<Config> {
             None
         }
     }
+}
+
+fn gen_config() {
+    if Path::new("config.toml").exists() {
+        eprintln!("Error: config.toml already exists in the current directory.");
+        process::exit(1);
+    }
+
+    print!(
+        "\
+# Hand history files to load by default (supports ~ expansion)
+# files = [\"session1.json\", \"session2.json\"]
+
+# Player name unification — key is canonical name, value is list of aliases
+# [unify]
+# pranav = [\"pranav\", \"pranavv\"]
+# andrew = [\"Andrew\", \"aryan\"]
+
+# Display values in raw chips instead of BB
+# chips = false
+
+# Table size filter: hu (2), short (3-6), full (7+). Comma-separated.
+# format = \"short,full\"
+
+# Blind remapping — normalize non-standard blind levels
+# [[blind_remap]]
+# from = [1.0, 0.5]
+# to = [1.0, 1.0]
+"
+    );
 }
 
 fn is_log_file(path: &str) -> bool {
@@ -258,10 +337,12 @@ fn main() {
     let cli = Cli::parse();
     let no_config = cli.no_config;
     let log_format = cli.log_format;
-    let table_sizes = parse_table_sizes(&cli.format);
-    let use_chips = cli.chips;
 
     let (files, action) = match cli.command {
+        Command::GenConfig => {
+            gen_config();
+            return;
+        }
         Command::Stats { files, player } => (files.files, CliAction::Stats(player)),
         Command::Hand { id, files } => (files.files, CliAction::Hand(id)),
         Command::Search {
@@ -300,8 +381,15 @@ fn main() {
         Command::Summary { files } => (files.files, CliAction::Summary),
     };
 
-    let (files, unify_map, blind_remap, from_config) =
-        resolve_files_and_unify(files, cli.unify_players, no_config);
+    let resolved =
+        resolve_config(files, cli.unify_players, cli.blind_remap, cli.chips, cli.format, no_config);
+
+    let files = resolved.files;
+    let unify_map = resolved.unify;
+    let blind_remap = resolved.blind_remap;
+    let from_config = resolved.from_config;
+    let use_chips = resolved.chips;
+    let table_sizes = parse_table_sizes(&resolved.format);
 
     if files.is_empty() {
         eprintln!("Error: no hand history files specified.\n");

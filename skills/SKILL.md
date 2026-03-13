@@ -10,7 +10,7 @@ allowed-tools:
 - **Command:** `poker-cli` (assumed installed and on PATH)
 - **Source:** `~/dev/poker-cli`
 - **Hand files:** `~/dev/pokernow/hands/YYYY-MM-DD.json`
-- **Tests:** 146 tests, ~92% line coverage. `cargo test` / `cargo llvm-cov`
+- **Tests:** 251 tests, ~92% line coverage. `cargo test` / `cargo llvm-cov`
 
 ## Commands
 
@@ -77,15 +77,29 @@ poker-cli summary session.json
 
 Compact one-screen overview: hand count, stakes, player count, biggest pot, and a P&L table with VPIP/PFR/BB-per-hand for all players ranked by profit. Also shows biggest winner and biggest loser.
 
+### gen-config — Generate Config Template
+
+```bash
+poker-cli gen-config
+```
+
+Generates a fully-commented default `config.toml` with all available options. Errors if `config.toml` already exists in the current directory.
+
 ### Global Flags
 
 ```bash
 poker-cli --unify-players "pranav,pranavv;Steve,steveooooo" stats session.json
 poker-cli --no-config stats session.json
+poker-cli --chips stats session.json
+poker-cli --format hu,short,full stats session.json
+poker-cli --blind-remap "0.5/1:1/1,2/1:1/2" stats session.json
 ```
 
 - `--unify-players <groups>` — merge player identities. First name = canonical. Semicolons separate groups. Overrides config.toml `[unify]`.
 - `--no-config` — disable loading config.toml entirely.
+- `--chips` — display values in raw chip amounts instead of BB.
+- `--format <sizes>` — filter by table size: `hu` (2), `short` (3-6), `full` (7+). Comma-separated. Default: `short,full`.
+- `--blind-remap <rules>` — normalize non-standard blind levels. Format: `from_sb/from_bb:to_sb/to_bb,...`. Overrides config.
 
 ## Config File
 
@@ -105,9 +119,20 @@ files = [
 # Player unification — key is canonical name, value is list of aliases
 [unify]
 pranav = ["pranav", "pranavv"]
+
+# Display values in raw chips instead of BB
+# chips = false
+
+# Table size filter (comma-separated: hu, short, full)
+# format = "short,full"
+
+# Blind remapping — normalize non-standard blind levels
+# [[blind_remap]]
+# from = [1.0, 0.5]
+# to = [1.0, 1.0]
 ```
 
-**Precedence:** CLI args override config.toml. If files given on CLI, config `files` ignored. If `--unify-players` passed, config `[unify]` ignored. When config is loaded, "Loaded N file(s) from config.toml" is printed to stderr.
+**Precedence:** CLI args override config.toml. If files given on CLI, config `files` ignored. If `--unify-players` passed, config `[unify]` ignored. `--blind-remap` on CLI overrides config. `--chips` enables chips mode regardless of config. `--format` overrides config format. When config is loaded, "Loaded N file(s) from config.toml" is printed to stderr.
 
 ## What Gets Filtered
 

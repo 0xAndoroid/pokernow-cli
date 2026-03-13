@@ -235,36 +235,9 @@ fn process_log_hand<S: std::hash::BuildHasher>(
         orig_name_to_seat.entry(pp.name.to_ascii_lowercase()).or_insert((i + 1) as u8);
     }
 
-    // Determine blinds from posted amounts + positions
-    let mut sb_amount = 0.0_f64;
-    let mut bb_amount = 0.0_f64;
-
-    for line in &raw.action_lines {
-        if let Some((name, amount)) = parse_posted(line) {
-            let seat = find_seat_by_name(&name, &orig_name_to_seat);
-            if let Some(s) = seat {
-                let pos = players.iter().find(|p| p.seat == s).map(|p| p.position);
-                match pos {
-                    Some(Position::SB) => sb_amount = amount,
-                    Some(Position::BB) => bb_amount = amount,
-                    _ => {
-                        // Non-blind post (dead blind from non-SB/BB player)
-                        // Use it to infer BB if we haven't found one
-                        if bb_amount == 0.0 {
-                            bb_amount = amount;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Fallback: if only one blind found (heads-up: SB posts first, BB second)
-    if sb_amount == 0.0 && bb_amount > 0.0 {
-        sb_amount = bb_amount;
-    } else if bb_amount == 0.0 && sb_amount > 0.0 {
-        bb_amount = sb_amount;
-    }
+    // Determine blinds from posting order (not header position labels)
+    let (posting_roles, sb_amount, bb_amount) =
+        determine_posting_roles(&raw.action_lines, &orig_name_to_seat);
 
     let (small_blind, big_blind) = apply_blind_remap(sb_amount, bb_amount, blind_remap);
 
@@ -316,7 +289,7 @@ fn process_log_hand<S: std::hash::BuildHasher>(
             continue;
         }
 
-        if let Some(action) = parse_action(line, &orig_name_to_seat, &players, bb_amount)
+        if let Some(action) = parse_action(line, &orig_name_to_seat, &posting_roles)
             && let Some(current) = streets.last_mut()
         {
             current.actions.push(action);
@@ -479,25 +452,60 @@ fn find_seat_by_name(name: &str, name_to_seat: &HashMap<String, u8>) -> Option<u
     name_to_seat.get(&name.to_ascii_lowercase()).copied()
 }
 
+fn determine_posting_roles(
+    action_lines: &[String],
+    name_to_seat: &HashMap<String, u8>,
+) -> (HashMap<u8, ActionType>, f64, f64) {
+    let mut posts: Vec<(u8, f64)> = Vec::new();
+
+    for line in action_lines {
+        if let Some((name, amount)) = parse_posted(line)
+            && let Some(seat) = find_seat_by_name(&name, name_to_seat)
+        {
+            posts.push((seat, amount));
+        }
+    }
+
+    let mut roles: HashMap<u8, ActionType> = HashMap::new();
+    let mut sb_amount = 0.0_f64;
+    let mut bb_amount = 0.0_f64;
+
+    match posts.len() {
+        0 => {}
+        1 => {
+            roles.insert(posts[0].0, ActionType::BigBlind);
+            bb_amount = posts[0].1;
+        }
+        _ => {
+            roles.insert(posts[0].0, ActionType::SmallBlind);
+            sb_amount = posts[0].1;
+            roles.insert(posts[1].0, ActionType::BigBlind);
+            bb_amount = posts[1].1;
+
+            for &(seat, amount) in &posts[2..] {
+                if amount > bb_amount && !roles.values().any(|r| *r == ActionType::Straddle) {
+                    roles.insert(seat, ActionType::Straddle);
+                } else {
+                    roles.insert(seat, ActionType::DeadBlind);
+                }
+            }
+        }
+    }
+
+    (roles, sb_amount, bb_amount)
+}
+
 fn parse_action(
     line: &str,
     name_to_seat: &HashMap<String, u8>,
-    players: &[PlayerInHand],
-    bb_amount: f64,
+    posting_roles: &HashMap<u8, ActionType>,
 ) -> Option<Action> {
     let all_in = line.ends_with(" and go all in");
     let line = if all_in { &line[..line.len() - " and go all in".len()] } else { line };
 
-    // Try each action pattern
     if let Some((name, amount)) = parse_posted_action(line) {
         let seat = find_seat_by_name(&name, name_to_seat)?;
-        let pos = players.iter().find(|p| p.seat == seat).map(|p| p.position)?;
-        let kind = match pos {
-            Position::SB => ActionType::SmallBlind,
-            Position::BB => ActionType::BigBlind,
-            _ if bb_amount > 0.0 && amount > bb_amount => ActionType::Straddle,
-            _ => ActionType::DeadBlind,
-        };
+        let kind = posting_roles.get(&seat).copied().unwrap_or(ActionType::DeadBlind);
         return Some(Action {
             seat,
             kind,
@@ -1176,6 +1184,170 @@ Andrew won 2.5 chips
         let hand = &data.hands[0];
         assert!(hand.straddle_seat.is_none(), "posting BB amount is dead blind, not straddle");
         assert!((hand.effective_bb - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn blinds_from_posting_order_not_position() {
+        // Bug case: header says nate=BB, pranav=CO, but posting order determines blinds
+        // nate posts first (0.50) = SB, pranav posts second (1.00) = BB
+        let input = "\
+No Limit Texas Hold'em - 2025/12/28 20:00:00 EST
+kevin {id: lWyn_wrdD6} (100, SB)
+nate {id: 0pg_uRrG6e} (100, BB)
+pranav {id: viPKe3plzj} (100, CO)
+Andrew {id: wBcyK_YnY6} (100, BU)
+4 players are in the hand
+nate posted 0.50
+pranav posted 1.00
+kevin folded
+Andrew folded
+nate folded
+pranav won 1.50 chips
+";
+        let file = write_temp_log(input);
+        let path = file.path().to_string_lossy().to_string();
+        let data = parse_log_files(&[path], &HashMap::new(), &[]).unwrap();
+
+        let hand = &data.hands[0];
+        assert!(
+            (hand.small_blind - 0.5).abs() < f64::EPSILON,
+            "SB should be 0.50 from first poster, got {}",
+            hand.small_blind
+        );
+        assert!(
+            (hand.big_blind - 1.0).abs() < f64::EPSILON,
+            "BB should be 1.00 from second poster, got {}",
+            hand.big_blind
+        );
+    }
+
+    #[test]
+    fn blinds_with_blind_remap() {
+        // Same scenario but with remap 0.5/1 → 1/1
+        let input = "\
+No Limit Texas Hold'em - 2025/12/28 20:00:00 EST
+kevin {id: lWyn_wrdD6} (100, SB)
+nate {id: 0pg_uRrG6e} (100, BB)
+pranav {id: viPKe3plzj} (100, CO)
+Andrew {id: wBcyK_YnY6} (100, BU)
+4 players are in the hand
+nate posted 0.50
+pranav posted 1.00
+kevin folded
+Andrew folded
+nate folded
+pranav won 1.50 chips
+";
+        let file = write_temp_log(input);
+        let path = file.path().to_string_lossy().to_string();
+        let remap = vec![BlindRemap {
+            from: [0.5, 1.0],
+            to: [1.0, 1.0],
+        }];
+        let data = parse_log_files(&[path], &HashMap::new(), &remap).unwrap();
+
+        let hand = &data.hands[0];
+        assert!(
+            (hand.small_blind - 1.0).abs() < f64::EPSILON,
+            "Remapped SB should be 1.0, got {}",
+            hand.small_blind
+        );
+        assert!(
+            (hand.big_blind - 1.0).abs() < f64::EPSILON,
+            "Remapped BB should be 1.0, got {}",
+            hand.big_blind
+        );
+    }
+
+    #[test]
+    fn single_poster_is_bb() {
+        // Only one person posts — that's the BB (SB is dead/missing)
+        let input = "\
+No Limit Texas Hold'em - 2025/12/28 20:00:00 EST
+kevin {id: lWyn_wrdD6} (100, SB)
+nate {id: 0pg_uRrG6e} (100, BB)
+2 players are in the hand
+nate posted 1
+kevin folded
+nate won 1 chips
+";
+        let file = write_temp_log(input);
+        let path = file.path().to_string_lossy().to_string();
+        let data = parse_log_files(&[path], &HashMap::new(), &[]).unwrap();
+
+        let hand = &data.hands[0];
+        assert!(
+            (hand.small_blind - 0.0).abs() < f64::EPSILON,
+            "SB should be 0 when only one poster, got {}",
+            hand.small_blind
+        );
+        assert!(
+            (hand.big_blind - 1.0).abs() < f64::EPSILON,
+            "BB should be 1.0 from single poster, got {}",
+            hand.big_blind
+        );
+        // The single poster should be tagged as BigBlind
+        let preflop = &hand.streets[0];
+        let bb_action = preflop.actions.iter().find(|a| a.kind == ActionType::BigBlind);
+        assert!(bb_action.is_some(), "single poster should be BigBlind action");
+    }
+
+    #[test]
+    fn determine_posting_roles_basic() {
+        let mut name_to_seat = HashMap::new();
+        name_to_seat.insert("alice".to_string(), 1_u8);
+        name_to_seat.insert("bob".to_string(), 2_u8);
+        let lines = vec!["alice posted 0.5".to_string(), "bob posted 1".to_string()];
+        let (roles, sb, bb) = determine_posting_roles(&lines, &name_to_seat);
+        assert!((sb - 0.5).abs() < f64::EPSILON);
+        assert!((bb - 1.0).abs() < f64::EPSILON);
+        assert_eq!(roles.get(&1), Some(&ActionType::SmallBlind));
+        assert_eq!(roles.get(&2), Some(&ActionType::BigBlind));
+    }
+
+    #[test]
+    fn determine_posting_roles_with_straddle() {
+        let mut name_to_seat = HashMap::new();
+        name_to_seat.insert("alice".to_string(), 1_u8);
+        name_to_seat.insert("bob".to_string(), 2_u8);
+        name_to_seat.insert("charlie".to_string(), 3_u8);
+        let lines = vec![
+            "alice posted 0.5".to_string(),
+            "bob posted 1".to_string(),
+            "charlie posted 2".to_string(),
+        ];
+        let (roles, sb, bb) = determine_posting_roles(&lines, &name_to_seat);
+        assert!((sb - 0.5).abs() < f64::EPSILON);
+        assert!((bb - 1.0).abs() < f64::EPSILON);
+        assert_eq!(roles.get(&1), Some(&ActionType::SmallBlind));
+        assert_eq!(roles.get(&2), Some(&ActionType::BigBlind));
+        assert_eq!(roles.get(&3), Some(&ActionType::Straddle));
+    }
+
+    #[test]
+    fn determine_posting_roles_dead_blind() {
+        let mut name_to_seat = HashMap::new();
+        name_to_seat.insert("alice".to_string(), 1_u8);
+        name_to_seat.insert("bob".to_string(), 2_u8);
+        name_to_seat.insert("charlie".to_string(), 3_u8);
+        let lines = vec![
+            "alice posted 0.5".to_string(),
+            "bob posted 1".to_string(),
+            "charlie posted 1".to_string(),
+        ];
+        let (roles, _, _) = determine_posting_roles(&lines, &name_to_seat);
+        assert_eq!(roles.get(&3), Some(&ActionType::DeadBlind));
+    }
+
+    #[test]
+    fn determine_posting_roles_single_poster() {
+        let mut name_to_seat = HashMap::new();
+        name_to_seat.insert("bob".to_string(), 2_u8);
+        let lines = vec!["bob posted 1".to_string()];
+        let (roles, sb, bb) = determine_posting_roles(&lines, &name_to_seat);
+        assert!((sb - 0.0).abs() < f64::EPSILON);
+        assert!((bb - 1.0).abs() < f64::EPSILON);
+        assert_eq!(roles.get(&2), Some(&ActionType::BigBlind));
     }
 
     fn write_temp_log(content: &str) -> tempfile::NamedTempFile {

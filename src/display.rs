@@ -61,7 +61,7 @@ fn build_hole_cards_map(hand: &Hand) -> HashMap<u8, Vec<Card>> {
 fn print_header(hand: &Hand, seat_name: &HashMap<u8, String>) {
     let bomb = if hand.bomb_pot { " [BOMB POT]" } else { "" };
     let eff_stack = hand.players.iter().map(|p| p.stack).fold(f64::INFINITY, f64::min);
-    let eff_bb = eff_stack / hand.big_blind;
+    let eff_bb = if hand.big_blind > 0.0 { eff_stack / hand.big_blind } else { 0.0 };
     println!(
         "Hand #{} ({}) | Stakes {}/{} | {} players | Eff: {} BB{}",
         hand.number,

@@ -3,7 +3,8 @@ use std::fmt::Write;
 
 use crate::card::{Card, evaluate};
 use crate::parser::{
-    ActionType, GameData, Hand, Position, Street, StreetData, invested, net_profit,
+    ActionType, GameData, Hand, Position, Street, StreetData, invested, net_profit, saw_street,
+    went_to_showdown,
 };
 
 #[derive(Default)]
@@ -57,36 +58,6 @@ fn pos_index(pos: Position) -> usize {
     }
 }
 
-fn fold_street(hand: &Hand, seat: u8) -> Option<Street> {
-    for sd in &hand.streets {
-        for a in &sd.actions {
-            if a.seat == seat && a.kind == ActionType::Fold {
-                return Some(sd.street);
-            }
-        }
-    }
-    None
-}
-
-fn saw_street(hand: &Hand, seat: u8, street: Street) -> bool {
-    if let Some(fs) = fold_street(hand, seat) {
-        return fs >= street;
-    }
-    if hand.winners.iter().any(|w| w.seat == seat) {
-        return true;
-    }
-    for sd in &hand.streets {
-        if sd.street >= street {
-            for a in &sd.actions {
-                if a.seat == seat {
-                    return true;
-                }
-            }
-        }
-    }
-    street == Street::Preflop
-}
-
 fn is_forced(at: ActionType) -> bool {
     matches!(
         at,
@@ -118,16 +89,6 @@ fn board_at_street(hand: &Hand, street: Street) -> Vec<Card> {
     board
 }
 
-fn went_to_showdown(hand: &Hand, seat: u8) -> bool {
-    if !hand.real_showdown {
-        return false;
-    }
-    if hand.shown_cards.contains_key(&seat) {
-        return true;
-    }
-    hand.winners.iter().any(|w| w.seat == seat && w.cards.is_some())
-}
-
 fn get_hole_cards(hand: &Hand, seat: u8) -> Option<&Vec<Card>> {
     hand.players.iter().find(|p| p.seat == seat).and_then(|p| p.hole_cards.as_ref())
 }
@@ -144,7 +105,9 @@ pub fn compute_stats(data: &GameData) -> Vec<PlayerStats> {
             });
 
             stats.hands_at_table += 1;
-            stats.net_bb += net_profit(hand, p.seat) / hand.big_blind;
+            if hand.big_blind > 0.0 {
+                stats.net_bb += net_profit(hand, p.seat) / hand.big_blind;
+            }
 
             if !hand.bomb_pot {
                 stats.hands_played += 1;
@@ -153,18 +116,25 @@ pub fn compute_stats(data: &GameData) -> Vec<PlayerStats> {
             }
         }
 
-        process_preflop(hand, &mut map);
-        process_postflop(hand, &mut map);
-        process_showdown(hand, &mut map);
-        process_all_in_ev(hand, &mut map);
+        let seat_to_id: HashMap<u8, &str> =
+            hand.players.iter().map(|p| (p.seat, p.id.as_str())).collect();
+
+        process_preflop(hand, &seat_to_id, &mut map);
+        process_postflop(hand, &seat_to_id, &mut map);
+        process_showdown(hand, &seat_to_id, &mut map);
+        process_all_in_ev(hand, &seat_to_id, &mut map);
     }
 
     let mut result: Vec<PlayerStats> = map.into_values().collect();
-    result.sort_unstable_by(|a, b| b.net_bb.partial_cmp(&a.net_bb).unwrap());
+    result.sort_unstable_by(|a, b| b.net_bb.total_cmp(&a.net_bb));
     result
 }
 
-fn process_preflop(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
+fn process_preflop(
+    hand: &Hand,
+    seat_to_id: &HashMap<u8, &str>,
+    map: &mut HashMap<&str, PlayerStats>,
+) {
     if hand.bomb_pot {
         return;
     }
@@ -173,9 +143,6 @@ fn process_preflop(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
         Some(sd) if sd.street == Street::Preflop => sd,
         _ => return,
     };
-
-    let seat_to_id: HashMap<u8, &str> =
-        hand.players.iter().map(|p| (p.seat, p.id.as_str())).collect();
 
     let seat_to_pos: HashMap<u8, Position> =
         hand.players.iter().map(|p| (p.seat, p.position)).collect();
@@ -339,10 +306,11 @@ fn process_preflop(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
     }
 }
 
-fn process_postflop(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
-    let seat_to_id: HashMap<u8, &str> =
-        hand.players.iter().map(|p| (p.seat, p.id.as_str())).collect();
-
+fn process_postflop(
+    hand: &Hand,
+    seat_to_id: &HashMap<u8, &str>,
+    map: &mut HashMap<&str, PlayerStats>,
+) {
     let preflop = match hand.streets.first() {
         Some(sd) if sd.street == Street::Preflop => sd,
         _ => return,
@@ -444,7 +412,11 @@ fn process_postflop(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
     }
 }
 
-fn process_showdown(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
+fn process_showdown(
+    hand: &Hand,
+    _seat_to_id: &HashMap<u8, &str>,
+    map: &mut HashMap<&str, PlayerStats>,
+) {
     if !hand.real_showdown {
         return;
     }
@@ -469,8 +441,12 @@ fn process_showdown(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
     }
 }
 
-fn process_all_in_ev(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
-    if !hand.real_showdown {
+fn process_all_in_ev(
+    hand: &Hand,
+    seat_to_id: &HashMap<u8, &str>,
+    map: &mut HashMap<&str, PlayerStats>,
+) {
+    if !hand.real_showdown || hand.big_blind <= 0.0 {
         return;
     }
 
@@ -516,12 +492,12 @@ fn process_all_in_ev(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
 
     let board = board_at_street(hand, ai_street);
 
-    let folded_invested: f64 = hand
+    let folded_investments: Vec<f64> = hand
         .players
         .iter()
         .filter(|p| folded_seats.contains(&p.seat))
         .map(|p| invested(hand, p.seat))
-        .sum();
+        .collect();
 
     let mut investments: Vec<f64> = known.iter().map(|&(seat, _)| invested(hand, seat)).collect();
     for &(seat, _) in &known {
@@ -550,27 +526,30 @@ fn process_all_in_ev(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
         }
 
         let eligible: Vec<usize> = (0..n).filter(|&i| investments[i] >= threshold).collect();
-        if eligible.len() < 2 {
-            prev_threshold = threshold;
-            continue;
-        }
-
         let slice_size = marginal * eligible.len() as f64;
-        let dead_in_slice = if prev_threshold == 0.0 { folded_invested } else { 0.0 };
+
+        // Dead money from folded players: each contributes
+        // min(their_investment, threshold) - min(their_investment, prev_threshold)
+        let dead_in_slice: f64 = folded_investments
+            .iter()
+            .map(|&fi| fi.min(threshold) - fi.min(prev_threshold))
+            .filter(|&v| v > 0.0)
+            .sum();
         let total_slice = slice_size + dead_in_slice;
 
-        let slice_players: Vec<(u8, &Vec<Card>)> = eligible.iter().map(|&i| known[i]).collect();
-        let slice_eq = calculate_multi_equity(&slice_players, &board, hand);
+        if eligible.len() == 1 {
+            ev_expected[eligible[0]] += total_slice;
+        } else {
+            let slice_players: Vec<(u8, &Vec<Card>)> = eligible.iter().map(|&i| known[i]).collect();
+            let slice_eq = calculate_multi_equity(&slice_players, &board, hand);
 
-        for (j, &i) in eligible.iter().enumerate() {
-            ev_expected[i] += slice_eq[j] * total_slice;
+            for (j, &i) in eligible.iter().enumerate() {
+                ev_expected[i] += slice_eq[j] * total_slice;
+            }
         }
 
         prev_threshold = threshold;
     }
-
-    let seat_to_id: HashMap<u8, &str> =
-        hand.players.iter().map(|p| (p.seat, p.id.as_str())).collect();
 
     for (i, &(seat, _)) in known.iter().enumerate() {
         let actual_from_pot: f64 =
@@ -665,6 +644,8 @@ fn enumerate_equity(
 
     let dk = deck.len();
     let mut full_board = Vec::with_capacity(5);
+    let mut scores = Vec::with_capacity(n);
+    let mut combined = Vec::with_capacity(7);
 
     if cards_needed == 1 {
         for card in deck {
@@ -672,7 +653,7 @@ fn enumerate_equity(
             full_board.extend_from_slice(board);
             full_board.push(*card);
 
-            tally_result(players, &full_board, &mut wins);
+            tally_result(players, &full_board, &mut wins, &mut scores, &mut combined);
             total += 1;
         }
     } else {
@@ -683,7 +664,7 @@ fn enumerate_equity(
                 full_board.push(deck[i]);
                 full_board.push(deck[j]);
 
-                tally_result(players, &full_board, &mut wins);
+                tally_result(players, &full_board, &mut wins, &mut scores, &mut combined);
                 total += 1;
             }
         }
@@ -709,6 +690,8 @@ fn monte_carlo_equity(
     let dk = deck.len();
     let mut rng_state: u64 = 0xDEAD_BEEF_CAFE_1234;
     let mut full_board = Vec::with_capacity(5);
+    let mut scores = Vec::with_capacity(n);
+    let mut combined = Vec::with_capacity(7);
 
     for _ in 0..samples {
         full_board.clear();
@@ -729,23 +712,28 @@ fn monte_carlo_equity(
             }
         }
 
-        tally_result(players, &full_board, &mut wins);
+        tally_result(players, &full_board, &mut wins, &mut scores, &mut combined);
     }
 
     let t = samples as f64;
     wins.iter().map(|w| w / t).collect()
 }
 
-fn tally_result(players: &[(u8, &Vec<Card>)], board: &[Card], wins: &mut [f64]) {
+fn tally_result(
+    players: &[(u8, &Vec<Card>)],
+    board: &[Card],
+    wins: &mut [f64],
+    scores: &mut Vec<u32>,
+    combined: &mut Vec<Card>,
+) {
+    scores.clear();
     let mut best_score = 0u32;
-    let mut scores = Vec::with_capacity(players.len());
 
     for (_, hole) in players {
-        let mut combined = Vec::with_capacity(hole.len() + board.len());
+        combined.clear();
         combined.extend_from_slice(hole);
         combined.extend_from_slice(board);
-        let rank = evaluate(&combined);
-        let s = rank.score;
+        let s = evaluate(combined).score;
         if s > best_score {
             best_score = s;
         }
@@ -753,7 +741,7 @@ fn tally_result(players: &[(u8, &Vec<Card>)], board: &[Card], wins: &mut [f64]) 
     }
 
     let mut winner_count = 0u32;
-    for &s in &scores {
+    for &s in scores.iter() {
         if s == best_score {
             winner_count += 1;
         }

@@ -1,4 +1,4 @@
-use crate::parser::{ActionType, GameData, Hand, Street, net_profit};
+use crate::parser::{GameData, Hand, Street, net_profit, saw_street, went_to_showdown};
 
 #[derive(Clone, Copy, Default)]
 pub enum SortField {
@@ -40,7 +40,7 @@ pub fn search_hands(data: &GameData, filter: &SearchFilter) -> Vec<SearchResult>
             let (winner_name, winner_amount) = primary_winner(hand);
             let player_net_bb = filter.player.as_ref().map(|name| {
                 let seat = find_seat(hand, name).unwrap_or(0);
-                net_profit(hand, seat) / hand.big_blind
+                if hand.big_blind > 0.0 { net_profit(hand, seat) / hand.big_blind } else { 0.0 }
             });
             SearchResult {
                 hand_number: hand.number,
@@ -64,23 +64,16 @@ pub fn search_hands(data: &GameData, filter: &SearchFilter) -> Vec<SearchResult>
 
 fn matches_filter(hand: &Hand, filter: &SearchFilter) -> bool {
     if let Some(ref name) = filter.player {
-        if !player_in_hand(hand, name) {
-            return false;
-        }
+        let Some(seat) = find_seat(hand, name) else { return false };
 
-        if let Some(true) = filter.showdown
-            && !player_went_to_showdown(hand, name)
-        {
-            return false;
-        }
-        if let Some(false) = filter.showdown
-            && hand.real_showdown
-        {
-            return false;
+        if let Some(want_showdown) = filter.showdown {
+            let player_showed = went_to_showdown(hand, seat);
+            if want_showdown != player_showed {
+                return false;
+            }
         }
 
         if filter.won || filter.lost {
-            let Some(seat) = find_seat(hand, name) else { return false };
             let net = net_profit(hand, seat);
             if filter.won && net <= 0.0 {
                 return false;
@@ -95,20 +88,23 @@ fn matches_filter(hand: &Hand, filter: &SearchFilter) -> bool {
         return false;
     }
 
-    if let Some(ref name) = filter.saw_flop
-        && !player_saw_street(hand, name, Street::Flop)
-    {
-        return false;
+    if let Some(ref name) = filter.saw_flop {
+        let Some(seat) = find_seat(hand, name) else { return false };
+        if !saw_street(hand, seat, Street::Flop) {
+            return false;
+        }
     }
-    if let Some(ref name) = filter.saw_turn
-        && !player_saw_street(hand, name, Street::Turn)
-    {
-        return false;
+    if let Some(ref name) = filter.saw_turn {
+        let Some(seat) = find_seat(hand, name) else { return false };
+        if !saw_street(hand, seat, Street::Turn) {
+            return false;
+        }
     }
-    if let Some(ref name) = filter.saw_river
-        && !player_saw_street(hand, name, Street::River)
-    {
-        return false;
+    if let Some(ref name) = filter.saw_river {
+        let Some(seat) = find_seat(hand, name) else { return false };
+        if !saw_street(hand, seat, Street::River) {
+            return false;
+        }
     }
     let pot_bb = hand_pot_bb(hand);
     if let Some(min) = filter.min_pot
@@ -124,21 +120,6 @@ fn matches_filter(hand: &Hand, filter: &SearchFilter) -> bool {
     true
 }
 
-fn player_in_hand(hand: &Hand, name: &str) -> bool {
-    find_seat(hand, name).is_some()
-}
-
-fn player_went_to_showdown(hand: &Hand, name: &str) -> bool {
-    let Some(seat) = find_seat(hand, name) else { return false };
-    if !hand.real_showdown {
-        return false;
-    }
-    if hand.shown_cards.contains_key(&seat) {
-        return true;
-    }
-    hand.winners.iter().any(|w| w.seat == seat && w.cards.is_some())
-}
-
 fn primary_winner(hand: &Hand) -> (String, f64) {
     let winner = hand.winners.iter().max_by(|a, b| a.amount.total_cmp(&b.amount));
     match winner {
@@ -149,31 +130,6 @@ fn primary_winner(hand: &Hand) -> (String, f64) {
         }
         None => (String::new(), 0.0),
     }
-}
-
-pub fn player_saw_street(hand: &Hand, name: &str, street: Street) -> bool {
-    let Some(seat) = find_seat(hand, name) else { return false };
-
-    if !hand.streets.iter().any(|sd| sd.street == street) {
-        return false;
-    }
-
-    for sd in &hand.streets {
-        if sd.street >= street {
-            break;
-        }
-        if sd.actions.iter().any(|a| a.seat == seat && a.kind == ActionType::Fold) {
-            return false;
-        }
-    }
-
-    let has_action_on_or_after = hand
-        .streets
-        .iter()
-        .any(|sd| sd.street >= street && sd.actions.iter().any(|a| a.seat == seat));
-    let is_winner = hand.winners.iter().any(|w| w.seat == seat);
-
-    has_action_on_or_after || is_winner
 }
 
 pub fn hand_pot_bb(hand: &Hand) -> f64 {
@@ -595,8 +551,8 @@ mod tests {
             .win(1, 11.0);
 
         let hand = parse_single_hand(&b).unwrap();
-        assert!(player_saw_street(&hand, "Alice", Street::Flop));
-        assert!(player_saw_street(&hand, "Bob", Street::Flop));
-        assert!(!player_saw_street(&hand, "Charlie", Street::Flop));
+        assert!(saw_street(&hand, 1, Street::Flop));
+        assert!(saw_street(&hand, 2, Street::Flop));
+        assert!(!saw_street(&hand, 3, Street::Flop));
     }
 }

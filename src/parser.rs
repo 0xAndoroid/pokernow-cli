@@ -160,17 +160,21 @@ pub fn parse_files<S: std::hash::BuildHasher>(
     unify: &HashMap<String, String, S>,
     blind_remap: &[BlindRemap],
 ) -> Result<GameData, Box<dyn std::error::Error>> {
-    let mut all_hands = Vec::new();
-    let mut player_names: HashMap<String, String> = HashMap::new();
-
-    let id_unify = build_id_unify_map(paths, unify)?;
-
+    let mut raw_files = Vec::with_capacity(paths.len());
     for path in paths {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let raw: RawGameFile = serde_json::from_reader(reader)?;
+        raw_files.push(raw);
+    }
 
-        for raw_hand in raw.hands {
+    let id_unify = build_id_unify_map(&raw_files, unify);
+
+    let mut all_hands = Vec::new();
+    let mut player_names: HashMap<String, String> = HashMap::new();
+
+    for raw_file in raw_files {
+        for raw_hand in raw_file.hands {
             for rp in &raw_hand.players {
                 let canonical = id_unify.get(&rp.id).unwrap_or(&rp.id);
                 player_names.entry(canonical.clone()).or_insert_with(|| rp.name.clone());
@@ -189,16 +193,13 @@ pub fn parse_files<S: std::hash::BuildHasher>(
 }
 
 fn build_id_unify_map<S: std::hash::BuildHasher>(
-    paths: &[String],
+    raw_files: &[RawGameFile],
     unify: &HashMap<String, String, S>,
-) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+) -> HashMap<String, String> {
     let mut name_to_ids: HashMap<String, Vec<String>> = HashMap::new();
 
-    for path in paths {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        let raw: RawGameFile = serde_json::from_reader(reader)?;
-        for raw_hand in &raw.hands {
+    for raw_file in raw_files {
+        for raw_hand in &raw_file.hands {
             for rp in &raw_hand.players {
                 let ids = name_to_ids.entry(rp.name.clone()).or_default();
                 if !ids.contains(&rp.id) {
@@ -257,7 +258,7 @@ fn build_id_unify_map<S: std::hash::BuildHasher>(
         }
     }
 
-    Ok(id_map)
+    id_map
 }
 
 fn apply_blind_remap(sb: f64, bb: f64, rules: &[BlindRemap]) -> (f64, f64) {
@@ -603,13 +604,14 @@ fn parse_card_strings(cards: &[String]) -> Option<Vec<Card>> {
 pub fn invested(hand: &Hand, seat: u8) -> f64 {
     let mut additive_total = 0.0_f64;
     let mut street_maxes = [0.0_f64; 4];
-    for (i, sd) in hand.streets.iter().enumerate() {
+    for sd in &hand.streets {
+        let si = sd.street as usize;
         for a in &sd.actions {
             if a.seat == seat && is_monetary(a.kind) {
                 if matches!(a.kind, ActionType::Ante | ActionType::DeadBlind) {
                     additive_total += a.amount;
                 } else {
-                    street_maxes[i] = street_maxes[i].max(a.amount);
+                    street_maxes[si] = street_maxes[si].max(a.amount);
                 }
             }
         }
@@ -635,6 +637,39 @@ pub fn is_monetary(at: ActionType) -> bool {
             | ActionType::Call
             | ActionType::Bet
     )
+}
+
+pub fn saw_street(hand: &Hand, seat: u8, street: Street) -> bool {
+    if !hand.streets.iter().any(|sd| sd.street == street) {
+        return false;
+    }
+
+    for sd in &hand.streets {
+        if sd.street >= street {
+            break;
+        }
+        if sd.actions.iter().any(|a| a.seat == seat && a.kind == ActionType::Fold) {
+            return false;
+        }
+    }
+
+    let has_action_on_or_after = hand
+        .streets
+        .iter()
+        .any(|sd| sd.street >= street && sd.actions.iter().any(|a| a.seat == seat));
+    let is_winner = hand.winners.iter().any(|w| w.seat == seat);
+
+    has_action_on_or_after || is_winner
+}
+
+pub fn went_to_showdown(hand: &Hand, seat: u8) -> bool {
+    if !hand.real_showdown {
+        return false;
+    }
+    if hand.shown_cards.contains_key(&seat) {
+        return true;
+    }
+    hand.winners.iter().any(|w| w.seat == seat && w.cards.is_some())
 }
 
 #[cfg(test)]

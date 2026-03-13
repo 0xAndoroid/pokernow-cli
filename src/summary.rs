@@ -1,8 +1,10 @@
+use std::collections::HashSet;
+
 use crate::parser::GameData;
 use crate::search::hand_pot_bb;
 use crate::stats::compute_stats;
 
-pub fn print_summary(data: &GameData) {
+pub fn print_summary(data: &GameData, use_chips: bool) {
     let hand_count = data.hands.len();
     if hand_count == 0 {
         println!("No hands to summarize.");
@@ -33,36 +35,82 @@ pub fn print_summary(data: &GameData) {
 
     let biggest = data.hands.iter().max_by(|a, b| hand_pot_bb(a).total_cmp(&hand_pot_bb(b)));
     if let Some(h) = biggest {
-        println!("Biggest pot: {:.1} BB (Hand #{})", hand_pot_bb(h), h.number);
+        let pot_display = if use_chips {
+            let total: f64 = h.winners.iter().map(|w| w.amount).sum();
+            format_chips(total)
+        } else {
+            format!("{:.1} BB", hand_pot_bb(h))
+        };
+        let mut seen = HashSet::new();
+        let winner_names: Vec<&str> = h
+            .winners
+            .iter()
+            .filter_map(|w| {
+                if seen.insert(w.seat) {
+                    h.players.iter().find(|p| p.seat == w.seat).map(|p| p.name.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        println!("Biggest pot: {} (Hand #{}) — {}", pot_display, h.number, winner_names.join(", "));
     }
 
     let result = compute_stats(data);
     println!();
-    println!("{:<16} {:>10} {:>8} {:>8} {:>10}", "Player", "P&L (BB)", "VPIP", "PFR", "BB/hand");
+
+    let pnl_header = if use_chips { "P&L" } else { "P&L (BB)" };
+    let bbh_header = if use_chips { "$/hand" } else { "BB/hand" };
+    println!("{:<16} {:>10} {:>8} {:>8} {:>10}", "Player", pnl_header, "VPIP", "PFR", bbh_header);
     println!("{}", "-".repeat(56));
     for s in &result.players {
-        let bb_per_hand =
-            if s.hands_at_table > 0 { s.net_bb / f64::from(s.hands_at_table) } else { 0.0 };
+        let (pnl_val, bbh_val) = if use_chips {
+            let per_hand =
+                if s.hands_at_table > 0 { s.net_chips / f64::from(s.hands_at_table) } else { 0.0 };
+            let pnl = if s.net_chips >= 0.0 {
+                format!("+{:.1}", s.net_chips)
+            } else {
+                format!("{:.1}", s.net_chips)
+            };
+            let bbh =
+                if per_hand >= 0.0 { format!("+{per_hand:.2}") } else { format!("{per_hand:.2}") };
+            (pnl, bbh)
+        } else {
+            let bb_per_hand =
+                if s.hands_at_table > 0 { s.net_bb / f64::from(s.hands_at_table) } else { 0.0 };
+            let pnl = if s.net_bb >= 0.0 {
+                format!("+{:.1}", s.net_bb)
+            } else {
+                format!("{:.1}", s.net_bb)
+            };
+            let bbh = if bb_per_hand >= 0.0 {
+                format!("+{bb_per_hand:.2}")
+            } else {
+                format!("{bb_per_hand:.2}")
+            };
+            (pnl, bbh)
+        };
         let vpip = fmt_pct(s.vpip_hands, s.hands_played);
         let pfr = fmt_pct(s.pfr_hands, s.hands_played);
-        let pnl =
-            if s.net_bb >= 0.0 { format!("+{:.1}", s.net_bb) } else { format!("{:.1}", s.net_bb) };
-        let bbh = if bb_per_hand >= 0.0 {
-            format!("+{bb_per_hand:.2}")
-        } else {
-            format!("{bb_per_hand:.2}")
-        };
-        println!("{:<16} {:>10} {:>8} {:>8} {:>10}", s.name, pnl, vpip, pfr, bbh);
+        println!("{:<16} {:>10} {:>8} {:>8} {:>10}", s.name, pnl_val, vpip, pfr, bbh_val);
     }
 
     if let Some(winner) = result.players.first() {
         println!();
-        println!("Biggest winner: {} ({:+.1} BB)", winner.name, winner.net_bb);
+        if use_chips {
+            println!("Biggest winner: {} ({:+.1})", winner.name, winner.net_chips);
+        } else {
+            println!("Biggest winner: {} ({:+.1} BB)", winner.name, winner.net_bb);
+        }
     }
     if let Some(loser) = result.players.last()
         && loser.net_bb < 0.0
     {
-        println!("Biggest loser:  {} ({:.1} BB)", loser.name, loser.net_bb);
+        if use_chips {
+            println!("Biggest loser:  {} ({:.1})", loser.name, loser.net_chips);
+        } else {
+            println!("Biggest loser:  {} ({:.1} BB)", loser.name, loser.net_bb);
+        }
     }
 }
 
@@ -95,7 +143,7 @@ mod tests {
             .win(2, 1.5);
 
         let data = parse_game_data(&b);
-        print_summary(&data);
+        print_summary(&data, false);
     }
 
     #[test]
@@ -104,7 +152,7 @@ mod tests {
             hands: Vec::new(),
             player_names: std::collections::HashMap::new(),
         };
-        print_summary(&data);
+        print_summary(&data, false);
     }
 
     #[test]
@@ -132,13 +180,11 @@ mod tests {
             .win(2, 3.0);
 
         let data = parse_multi_game_data(&[&h1, &h2]);
-        print_summary(&data);
+        print_summary(&data, false);
     }
 
     #[test]
     fn summary_all_losers_no_double_sign() {
-        // Both players lose (rake-like scenario): biggest "winner" has negative P&L.
-        // The output must not contain "+-".
         let b = HandBuilder::new()
             .player("p1", 1, "Alice", 100.0)
             .player("p2", 2, "Bob", 100.0)
@@ -147,9 +193,47 @@ mod tests {
             .bb(2, 1.0)
             .call(1, 1.0)
             .check(2)
-            .win(1, 1.5); // rake took 0.5
+            .win(1, 1.5);
 
         let data = parse_game_data(&b);
-        print_summary(&data);
+        print_summary(&data, false);
+    }
+
+    #[test]
+    fn summary_chips_mode_no_panic() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .win(2, 1.5);
+
+        let data = parse_game_data(&b);
+        print_summary(&data, true);
+    }
+
+    #[test]
+    fn summary_split_pot_shows_both_winners() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .call(1, 1.0)
+            .check(2)
+            .flop(&["Ah", "Kd", "Qs"])
+            .check(1)
+            .check(2)
+            .showdown()
+            .show(1, &["9s", "8s"])
+            .show(2, &["9c", "8c"])
+            .win(1, 1.0)
+            .win(2, 1.0);
+
+        let data = parse_game_data(&b);
+        print_summary(&data, false);
     }
 }

@@ -43,6 +43,10 @@ struct Cli {
     #[arg(long, default_value = "short,full")]
     format: String,
 
+    /// Display values in raw chip amounts instead of BB
+    #[arg(long)]
+    chips: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -255,6 +259,7 @@ fn main() {
     let no_config = cli.no_config;
     let log_format = cli.log_format;
     let table_sizes = parse_table_sizes(&cli.format);
+    let use_chips = cli.chips;
 
     let (files, action) = match cli.command {
         Command::Stats { files, player } => (files.files, CliAction::Stats(player)),
@@ -330,9 +335,9 @@ fn main() {
         CliAction::Stats(player_filter) => {
             let result = stats::compute_stats(&data);
             if let Some(ref name) = player_filter {
-                stats::print_single_player_stats(&result, name);
+                stats::print_single_player_stats(&result, name, use_chips);
             } else {
-                stats::print_stats(&result);
+                stats::print_stats(&result, use_chips);
             }
         }
         CliAction::Hand(id) => {
@@ -346,7 +351,7 @@ fn main() {
             };
 
             if let Some(h) = hand {
-                display::display_hand(h);
+                display::display_hand(h, use_chips);
             } else {
                 eprintln!("Hand '{id}' not found.");
                 eprintln!(
@@ -361,10 +366,10 @@ fn main() {
         }
         CliAction::Search(filter) => {
             let results = search::search_hands(&data, &filter);
-            search::print_results(&results);
+            search::print_results(&results, use_chips);
         }
         CliAction::Summary => {
-            summary::print_summary(&data);
+            summary::print_summary(&data, use_chips);
         }
     }
 }

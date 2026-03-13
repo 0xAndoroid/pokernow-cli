@@ -38,12 +38,14 @@ pub struct PlayerStats {
     pub won_at_showdown: u32,
 
     pub net_bb: f64,
+    pub net_chips: f64,
 
     pub pos_vpip: [u32; 6],
     pub pos_pfr: [u32; 6],
     pub pos_hands: [u32; 6],
 
     pub all_in_ev_diff: f64,
+    pub all_in_ev_diff_chips: f64,
     pub all_in_hands: u32,
 }
 
@@ -110,8 +112,10 @@ pub fn compute_stats(data: &GameData) -> StatsResult {
             });
 
             stats.hands_at_table += 1;
+            let profit = net_profit(hand, p.seat);
+            stats.net_chips += profit;
             if hand.effective_bb > 0.0 {
-                stats.net_bb += net_profit(hand, p.seat) / hand.effective_bb;
+                stats.net_bb += profit / hand.effective_bb;
             }
 
             if !hand.bomb_pot {
@@ -563,12 +567,14 @@ fn process_all_in_ev(
         let actual_from_pot: f64 =
             hand.winners.iter().filter(|w| w.seat == seat).map(|w| w.amount).sum();
 
-        let ev_diff = (ev_expected[i] - actual_from_pot) / hand.effective_bb;
+        let ev_diff_chips = ev_expected[i] - actual_from_pot;
+        let ev_diff = ev_diff_chips / hand.effective_bb;
 
         if let Some(id) = seat_to_id.get(&seat)
             && let Some(stats) = map.get_mut(*id)
         {
             stats.all_in_ev_diff += ev_diff;
+            stats.all_in_ev_diff_chips += ev_diff_chips;
             stats.all_in_hands += 1;
         }
     }
@@ -786,17 +792,27 @@ fn fmt_bb(v: f64) -> String {
     if v >= 0.0 { format!("+{v:.1}") } else { format!("{v:.1}") }
 }
 
-fn print_player_stats(s: &PlayerStats, rank: Option<usize>, total_hands: usize) {
-    let bb_per_hand =
-        if s.hands_at_table > 0 { s.net_bb / f64::from(s.hands_at_table) } else { 0.0 };
+fn fmt_signed(v: f64) -> String {
+    if v >= 0.0 { format!("+{v:.1}") } else { format!("{v:.1}") }
+}
 
+fn print_player_stats(s: &PlayerStats, rank: Option<usize>, total_hands: usize, use_chips: bool) {
     if let Some(r) = rank {
         println!("{}. {} (ID: {})", r + 1, s.name, s.player_id);
     } else {
         println!("{} (ID: {})", s.name, s.player_id);
     }
     println!("   Hands: {}/{} (dealt/total)", s.hands_at_table, total_hands);
-    println!("   P&L: {} BB ({} BB/hand)", fmt_bb(s.net_bb), fmt_bb(bb_per_hand));
+
+    if use_chips {
+        let per_hand =
+            if s.hands_at_table > 0 { s.net_chips / f64::from(s.hands_at_table) } else { 0.0 };
+        println!("   P&L: {} ({}/hand)", fmt_signed(s.net_chips), fmt_signed(per_hand),);
+    } else {
+        let per_hand =
+            if s.hands_at_table > 0 { s.net_bb / f64::from(s.hands_at_table) } else { 0.0 };
+        println!("   P&L: {} BB ({} BB/hand)", fmt_bb(s.net_bb), fmt_bb(per_hand));
+    }
     println!();
 
     println!(
@@ -826,14 +842,25 @@ fn print_player_stats(s: &PlayerStats, rank: Option<usize>, total_hands: usize) 
     );
 
     if s.all_in_hands > 0 {
-        let ev_adj = s.net_bb + s.all_in_ev_diff;
-        let direction = if s.all_in_ev_diff >= 0.0 { "below" } else { "above" };
-        println!(
-            "   All-in EV: ran {:.0} BB {} EV (EV-adjusted: {} BB)",
-            s.all_in_ev_diff.abs(),
-            direction,
-            fmt_bb(ev_adj),
-        );
+        if use_chips {
+            let ev_adj = s.net_chips + s.all_in_ev_diff_chips;
+            let direction = if s.all_in_ev_diff_chips >= 0.0 { "below" } else { "above" };
+            println!(
+                "   All-in EV: ran {:.0} {} EV (EV-adjusted: {})",
+                s.all_in_ev_diff_chips.abs(),
+                direction,
+                fmt_signed(ev_adj),
+            );
+        } else {
+            let ev_adj = s.net_bb + s.all_in_ev_diff;
+            let direction = if s.all_in_ev_diff >= 0.0 { "below" } else { "above" };
+            println!(
+                "   All-in EV: ran {:.0} BB {} EV (EV-adjusted: {} BB)",
+                s.all_in_ev_diff.abs(),
+                direction,
+                fmt_bb(ev_adj),
+            );
+        }
     }
     println!();
 
@@ -852,20 +879,20 @@ fn print_player_stats(s: &PlayerStats, rank: Option<usize>, total_hands: usize) 
     println!();
 }
 
-pub fn print_stats(result: &StatsResult) {
+pub fn print_stats(result: &StatsResult, use_chips: bool) {
     println!("Player Stats (ranked by P&L)");
     println!("============================\n");
 
     for (rank, s) in result.players.iter().enumerate() {
-        print_player_stats(s, Some(rank), result.total_hands);
+        print_player_stats(s, Some(rank), result.total_hands, use_chips);
     }
 }
 
-pub fn print_single_player_stats(result: &StatsResult, name: &str) {
+pub fn print_single_player_stats(result: &StatsResult, name: &str, use_chips: bool) {
     let lower = name.to_ascii_lowercase();
     let found = result.players.iter().find(|s| s.name.to_ascii_lowercase() == lower);
     match found {
-        Some(s) => print_player_stats(s, None, result.total_hands),
+        Some(s) => print_player_stats(s, None, result.total_hands, use_chips),
         None => eprintln!("Player '{name}' not found in stats"),
     }
 }
@@ -1703,7 +1730,7 @@ mod tests {
 
         let data = parse_game_data(&b);
         let result = compute_stats(&data);
-        print_stats(&result);
+        print_stats(&result, false);
     }
 
     #[test]

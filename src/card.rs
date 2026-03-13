@@ -471,18 +471,22 @@ fn describe_trips(hole: &[Card], d: [u8; 5]) -> String {
     }
 }
 
-fn detect_draws(hole: &[Card], board: &[Card], _rank: &HandRank) -> Vec<String> {
+fn detect_draws(hole: &[Card], board: &[Card], rank: &HandRank) -> Vec<String> {
     let mut draws = Vec::new();
 
     let mut all_cards = Vec::with_capacity(hole.len() + board.len());
     all_cards.extend_from_slice(hole);
     all_cards.extend_from_slice(board);
 
-    if let Some(fd) = detect_flush_draw(hole, &all_cards) {
+    if rank.category < HandCategory::Flush
+        && let Some(fd) = detect_flush_draw(hole, &all_cards)
+    {
         draws.push(fd);
     }
 
-    if let Some(sd) = detect_straight_draw(hole, &all_cards, board) {
+    if rank.category < HandCategory::Straight
+        && let Some(sd) = detect_straight_draw(hole, &all_cards, board)
+    {
         draws.push(sd);
     }
 

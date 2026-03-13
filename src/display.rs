@@ -6,19 +6,23 @@ use crate::parser::{ActionType, Hand, Position, Street, net_profit};
 const POSITION_ORDER: [Position; 6] =
     [Position::BTN, Position::SB, Position::BB, Position::EP, Position::MP, Position::CO];
 
-pub fn display_hand(hand: &Hand) {
+pub fn display_hand(hand: &Hand, use_chips: bool) {
     let seat_name = build_seat_name_map(hand);
     let hole_cards = build_hole_cards_map(hand);
     let bb = hand.effective_bb;
 
-    print_header(hand, &seat_name);
-    print_players(hand, &hole_cards, bb);
+    print_header(hand, &seat_name, bb, use_chips);
+    print_players(hand, &hole_cards, bb, use_chips);
 
     let mut board: Vec<Card> = Vec::new();
     let mut running_pot = 0.0;
 
     for (street_idx, sd) in hand.streets.iter().enumerate() {
-        print_street_header(sd.street, &sd.new_cards, &board, running_pot);
+        if hand.run_it_twice && sd.street != Street::Preflop && sd.actions.is_empty() {
+            break;
+        }
+
+        print_street_header(sd.street, None, &sd.new_cards, &board, running_pot, bb, use_chips);
 
         if sd.street != Street::Preflop {
             board.extend_from_slice(&sd.new_cards);
@@ -29,16 +33,16 @@ pub fn display_hand(hand: &Hand) {
             print_made_hands(&hole_cards, &board, &seat_name, &folded);
         }
 
-        running_pot = print_actions(&sd.actions, &seat_name, running_pot);
+        running_pot = print_actions(&sd.actions, &seat_name, running_pot, bb, use_chips);
     }
 
     if hand.run_it_twice {
-        print_run_it_twice(hand, &seat_name, &hole_cards, &board);
+        print_run_it_twice(hand, &seat_name, &hole_cards, &board, running_pot, bb, use_chips);
     } else {
-        print_results(hand, &seat_name);
+        print_results(hand, &seat_name, bb, use_chips);
     }
 
-    print_net_pnl(hand, &seat_name);
+    print_net_pnl(hand, &seat_name, bb, use_chips);
 }
 
 fn build_seat_name_map(hand: &Hand) -> HashMap<u8, String> {
@@ -58,7 +62,7 @@ fn build_hole_cards_map(hand: &Hand) -> HashMap<u8, Vec<Card>> {
     map
 }
 
-fn print_header(hand: &Hand, seat_name: &HashMap<u8, String>) {
+fn print_header(hand: &Hand, seat_name: &HashMap<u8, String>, bb: f64, use_chips: bool) {
     let bomb = if hand.bomb_pot { " [BOMB POT]" } else { "" };
     let straddle_tag = if hand.straddle_seat.is_some() {
         format!(" [STR {}]", format_chips(hand.effective_bb))
@@ -66,15 +70,21 @@ fn print_header(hand: &Hand, seat_name: &HashMap<u8, String>) {
         String::new()
     };
     let eff_stack = hand.players.iter().map(|p| p.stack).fold(f64::INFINITY, f64::min);
-    let eff_bb = if hand.effective_bb > 0.0 { eff_stack / hand.effective_bb } else { 0.0 };
+    let eff_display = if use_chips {
+        format_chips(eff_stack)
+    } else if bb > 0.0 {
+        format!("{} BB", format_bb(eff_stack / bb))
+    } else {
+        format_chips(eff_stack)
+    };
     println!(
-        "Hand #{} ({}) | Stakes {}/{} | {} players | Eff: {} BB{}{}",
+        "Hand #{} ({}) | Stakes {}/{} | {} players | Eff: {}{}{}",
         hand.number,
         hand.id,
         format_chips(hand.small_blind),
         format_chips(hand.big_blind),
         hand.players.len(),
-        format_bb(eff_bb),
+        eff_display,
         straddle_tag,
         bomb,
     );
@@ -87,7 +97,7 @@ fn print_header(hand: &Hand, seat_name: &HashMap<u8, String>) {
     println!();
 }
 
-fn print_players(hand: &Hand, hole_cards: &HashMap<u8, Vec<Card>>, bb: f64) {
+fn print_players(hand: &Hand, hole_cards: &HashMap<u8, Vec<Card>>, bb: f64, use_chips: bool) {
     println!("Players:");
 
     let mut sorted: Vec<_> = hand.players.iter().collect();
@@ -97,37 +107,57 @@ fn print_players(hand: &Hand, hole_cards: &HashMap<u8, Vec<Card>>, bb: f64) {
 
     for p in sorted {
         let pos_str = format!("{:4}", position_tag(p.position));
-        let stack_bb = p.stack / bb;
+        let stack_display = if use_chips {
+            format_chips(p.stack)
+        } else if bb > 0.0 {
+            format!("{} BB", format_bb(p.stack / bb))
+        } else {
+            format_chips(p.stack)
+        };
         let cards_str = match hole_cards.get(&p.seat) {
             Some(cards) => format!("  [{}]", format_cards(cards)),
             None => String::new(),
         };
-        println!("  {}{:<8} {} BB{}", pos_str, p.name, format_bb(stack_bb), cards_str,);
+        println!("  {}{:<8} {}{}", pos_str, p.name, stack_display, cards_str);
     }
 
     println!();
 }
 
-fn print_street_header(street: Street, new_cards: &[Card], board: &[Card], pot: f64) {
+fn print_street_header(
+    street: Street,
+    run: Option<u8>,
+    new_cards: &[Card],
+    board: &[Card],
+    pot: f64,
+    bb: f64,
+    use_chips: bool,
+) {
+    let street_name = match street {
+        Street::Preflop => "PREFLOP",
+        Street::Flop => "FLOP",
+        Street::Turn => "TURN",
+        Street::River => "RIVER",
+    };
+    let run_label = match run {
+        Some(r) => format!(" {r}"),
+        None => String::new(),
+    };
+    let pot_str = format_val(pot, bb, use_chips);
+
     let header = match street {
-        Street::Preflop => format!("=== PREFLOP === (pot: {})", format_chips(pot)),
+        Street::Preflop => format!("=== {street_name} === (pot: {pot_str})"),
         Street::Flop => {
-            format!("=== FLOP [{}] === (pot: {})", format_cards(new_cards), format_chips(pot),)
-        }
-        Street::Turn => {
             format!(
-                "=== TURN [{}] [{}] === (pot: {})",
-                format_cards(board),
+                "=== {street_name}{run_label} [{}] === (pot: {pot_str})",
                 format_cards(new_cards),
-                format_chips(pot),
             )
         }
-        Street::River => {
+        Street::Turn | Street::River => {
             format!(
-                "=== RIVER [{}] [{}] === (pot: {})",
+                "=== {street_name}{run_label} [{}] [{}] === (pot: {pot_str})",
                 format_cards(board),
                 format_cards(new_cards),
-                format_chips(pot),
             )
         }
     };
@@ -171,6 +201,8 @@ fn print_actions(
     actions: &[crate::parser::Action],
     seat_name: &HashMap<u8, String>,
     pot_before_street: f64,
+    bb: f64,
+    use_chips: bool,
 ) -> f64 {
     let mut pot = pot_before_street;
     let mut current_bet: f64 = 0.0;
@@ -186,34 +218,34 @@ fn print_actions(
                 pot += a.amount - seat_invested;
                 per_seat.insert(a.seat, a.amount);
                 current_bet = current_bet.max(a.amount);
-                format!("  {} posts small blind {}", name, format_chips(a.amount))
+                format!("  {} posts small blind {}", name, format_val(a.amount, bb, use_chips))
             }
             ActionType::BigBlind => {
                 pot += a.amount - seat_invested;
                 per_seat.insert(a.seat, a.amount);
                 current_bet = current_bet.max(a.amount);
-                format!("  {} posts big blind {}", name, format_chips(a.amount))
+                format!("  {} posts big blind {}", name, format_val(a.amount, bb, use_chips))
             }
             ActionType::Ante => {
                 pot += a.amount;
-                format!("  {} antes {}", name, format_chips(a.amount))
+                format!("  {} antes {}", name, format_val(a.amount, bb, use_chips))
             }
             ActionType::Straddle => {
                 pot += a.amount - seat_invested;
                 per_seat.insert(a.seat, a.amount);
                 current_bet = current_bet.max(a.amount);
-                format!("  {} straddles {}", name, format_chips(a.amount))
+                format!("  {} straddles {}", name, format_val(a.amount, bb, use_chips))
             }
             ActionType::DeadBlind => {
                 pot += a.amount;
-                format!("  {} posts dead blind {}", name, format_chips(a.amount))
+                format!("  {} posts dead blind {}", name, format_val(a.amount, bb, use_chips))
             }
             ActionType::Fold => format!("  {name} folds"),
             ActionType::Check => format!("  {name} checks"),
             ActionType::Call => {
                 pot += a.amount - seat_invested;
                 per_seat.insert(a.seat, a.amount);
-                format!("  {} calls {}{}", name, format_chips(a.amount), all_in_tag)
+                format!("  {} calls {}{}", name, format_val(a.amount, bb, use_chips), all_in_tag)
             }
             ActionType::Bet => {
                 let is_raise = current_bet > 0.0;
@@ -235,7 +267,14 @@ fn print_actions(
                 pot += a.amount - seat_invested;
                 per_seat.insert(a.seat, a.amount);
                 current_bet = a.amount;
-                format!("  {} {} {}{}{}", name, verb, format_chips(a.amount), sizing, all_in_tag)
+                format!(
+                    "  {} {} {}{}{}",
+                    name,
+                    verb,
+                    format_val(a.amount, bb, use_chips),
+                    sizing,
+                    all_in_tag
+                )
             }
         };
         println!("{line}");
@@ -245,70 +284,61 @@ fn print_actions(
     pot
 }
 
-fn build_run2_board(hand: &Hand, run1_board: &[Card]) -> Vec<Card> {
-    let run1_streets: Vec<(Street, &[Card])> = hand
-        .streets
-        .iter()
-        .filter(|sd| sd.street != Street::Preflop && !sd.new_cards.is_empty())
-        .map(|sd| (sd.street, sd.new_cards.as_slice()))
-        .collect();
-
-    let mut board = Vec::new();
-    for &(street, run1_cards) in &run1_streets {
-        if let Some((_, r2)) = hand.run2_cards.iter().find(|(s, _)| *s == street) {
-            board.extend_from_slice(r2);
-        } else {
-            board.extend_from_slice(run1_cards);
-        }
-    }
-
-    if board.is_empty() { run1_board.to_vec() } else { board }
-}
-
 fn print_run_it_twice(
     hand: &Hand,
     seat_name: &HashMap<u8, String>,
     hole_cards: &HashMap<u8, Vec<Card>>,
-    run1_board: &[Card],
+    shared_board: &[Card],
+    pot: f64,
+    bb: f64,
+    use_chips: bool,
 ) {
-    println!("--- RUN IT TWICE ---");
+    let rit_streets: Vec<&crate::parser::StreetData> = hand
+        .streets
+        .iter()
+        .filter(|sd| sd.street != Street::Preflop && sd.actions.is_empty())
+        .collect();
+
+    println!("Players choose to run it twice");
     println!();
 
-    let run1_winners: Vec<_> = hand.winners.iter().filter(|w| w.run == 1).collect();
-    let run2_winners: Vec<_> = hand.winners.iter().filter(|w| w.run == 2).collect();
-    let run2_board = build_run2_board(hand, run1_board);
+    for run_num in 1..=2u8 {
+        println!("=== RUN {run_num} ===");
+        let mut board = shared_board.to_vec();
 
-    println!("Run 1: [{}]", format_cards(run1_board));
-    for (&seat, cards) in hole_cards {
-        let name = seat_name.get(&seat).map_or("?", String::as_str);
-        let desc = card::holding_description(cards, run1_board);
-        println!("  {name}: {desc}");
-    }
-    for w in &run1_winners {
-        let name = seat_name.get(&w.seat).map_or("?", String::as_str);
-        match &w.hand_description {
-            Some(desc) => println!("  {name} wins {} ({desc})", format_chips(w.amount)),
-            None => println!("  {name} wins {}", format_chips(w.amount)),
-        }
-    }
+        for sd in &rit_streets {
+            let new_cards = if run_num == 2 {
+                hand.run2_cards
+                    .iter()
+                    .find(|(s, _)| *s == sd.street)
+                    .map_or(sd.new_cards.as_slice(), |(_, c)| c.as_slice())
+            } else {
+                &sd.new_cards
+            };
 
-    println!();
-    println!("Run 2: [{}]", format_cards(&run2_board));
-    for (&seat, cards) in hole_cards {
-        let name = seat_name.get(&seat).map_or("?", String::as_str);
-        let desc = card::holding_description(cards, &run2_board);
-        println!("  {name}: {desc}");
-    }
-    for w in &run2_winners {
-        let name = seat_name.get(&w.seat).map_or("?", String::as_str);
-        match &w.hand_description {
-            Some(desc) => println!("  {name} wins {} ({desc})", format_chips(w.amount)),
-            None => println!("  {name} wins {}", format_chips(w.amount)),
+            print_street_header(sd.street, Some(run_num), new_cards, &board, pot, bb, use_chips);
+            board.extend_from_slice(new_cards);
+            print_made_hands(hole_cards, &board, seat_name, &[]);
         }
+
+        let run_winners: Vec<_> = hand.winners.iter().filter(|w| w.run == run_num).collect();
+        if !run_winners.is_empty() {
+            println!();
+            println!("Result (Run {run_num}):");
+            for w in &run_winners {
+                let name = seat_name.get(&w.seat).map_or("?", String::as_str);
+                let amt = format_val(w.amount, bb, use_chips);
+                match &w.hand_description {
+                    Some(desc) => println!("  {name} wins {amt} ({desc})"),
+                    None => println!("  {name} wins {amt}"),
+                }
+            }
+        }
+        println!();
     }
 }
 
-fn print_results(hand: &Hand, seat_name: &HashMap<u8, String>) {
+fn print_results(hand: &Hand, seat_name: &HashMap<u8, String>, bb: f64, use_chips: bool) {
     if hand.winners.is_empty() {
         return;
     }
@@ -316,14 +346,15 @@ fn print_results(hand: &Hand, seat_name: &HashMap<u8, String>) {
     println!("Result:");
     for w in &hand.winners {
         let name = seat_name.get(&w.seat).map_or("?", String::as_str);
+        let amt = format_val(w.amount, bb, use_chips);
         match &w.hand_description {
-            Some(desc) => println!("  {} wins {} ({})", name, format_chips(w.amount), desc),
-            None => println!("  {} wins {}", name, format_chips(w.amount)),
+            Some(desc) => println!("  {name} wins {amt} ({desc})"),
+            None => println!("  {name} wins {amt}"),
         }
     }
 }
 
-fn print_net_pnl(hand: &Hand, seat_name: &HashMap<u8, String>) {
+fn print_net_pnl(hand: &Hand, seat_name: &HashMap<u8, String>, bb: f64, use_chips: bool) {
     let mut entries: Vec<(&str, f64)> = hand
         .players
         .iter()
@@ -344,11 +375,8 @@ fn print_net_pnl(hand: &Hand, seat_name: &HashMap<u8, String>) {
     let parts: Vec<String> = entries
         .iter()
         .map(|(name, net)| {
-            if *net >= 0.0 {
-                format!("{name} +{}", format_chips(*net))
-            } else {
-                format!("{name} {}", format_chips(*net))
-            }
+            let val = format_val(net.abs(), bb, use_chips);
+            if *net >= 0.0 { format!("{name} +{val}") } else { format!("{name} -{val}") }
         })
         .collect();
 
@@ -361,6 +389,16 @@ fn format_cards(cards: &[Card]) -> String {
 
 fn format_chips(amount: f64) -> String {
     crate::format_chips(amount)
+}
+
+fn format_val(amount: f64, bb: f64, use_chips: bool) -> String {
+    if use_chips {
+        format_chips(amount)
+    } else if bb > 0.0 {
+        format_bb(amount / bb)
+    } else {
+        format_chips(amount)
+    }
 }
 
 fn format_bb(amount: f64) -> String {
@@ -408,7 +446,7 @@ mod tests {
             .win(1, 26.0);
 
         let hand = parse_single_hand(&b).unwrap();
-        display_hand(&hand);
+        display_hand(&hand, false);
     }
 
     #[test]
@@ -436,7 +474,7 @@ mod tests {
             .win(1, 2.0);
 
         let hand = parse_single_hand(&b).unwrap();
-        display_hand(&hand);
+        display_hand(&hand, false);
     }
 
     #[test]
@@ -459,7 +497,7 @@ mod tests {
             .win(1, 100.0);
 
         let hand = parse_single_hand(&b).unwrap();
-        display_hand(&hand);
+        display_hand(&hand, false);
     }
 
     #[test]
@@ -474,7 +512,7 @@ mod tests {
             .win(2, 1.5);
 
         let hand = parse_single_hand(&b).unwrap();
-        display_hand(&hand);
+        display_hand(&hand, false);
     }
 
     #[test]
@@ -488,7 +526,7 @@ mod tests {
             .fold(1);
 
         let hand = parse_single_hand(&b).unwrap();
-        display_hand(&hand);
+        display_hand(&hand, false);
     }
 
     #[test]
@@ -517,7 +555,23 @@ mod tests {
 
         let hand = parse_single_hand(&b).unwrap();
         assert!(hand.run_it_twice);
-        display_hand(&hand);
+        display_hand(&hand, false);
+    }
+
+    #[test]
+    fn display_chips_mode() {
+        let b = HandBuilder::new()
+            .player_with_hand("p1", 1, "Alice", 100.0, &["As", "Kd"])
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .bet(1, 3.0)
+            .fold(2)
+            .win(1, 4.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        display_hand(&hand, true);
     }
 
     #[test]
@@ -536,6 +590,18 @@ mod tests {
         assert_eq!(format_bb(100.0), "100");
         assert_eq!(format_bb(99.5), "99.5");
         assert_eq!(format_bb(100.001), "100");
+    }
+
+    #[test]
+    fn format_val_bb_mode() {
+        assert_eq!(format_val(10.0, 2.0, false), "5");
+        assert_eq!(format_val(5.0, 2.0, false), "2.5");
+    }
+
+    #[test]
+    fn format_val_chips_mode() {
+        assert_eq!(format_val(10.0, 2.0, true), "10");
+        assert_eq!(format_val(5.5, 2.0, true), "5.5");
     }
 
     #[test]

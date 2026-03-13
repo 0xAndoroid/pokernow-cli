@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::parser::{GameData, Hand, Street, net_profit, saw_street, went_to_showdown};
 
 #[derive(Clone, Copy, Default)]
@@ -24,10 +26,11 @@ pub struct SearchResult {
     pub hand_number: u32,
     pub hand_id: String,
     pub pot_bb: f64,
+    pub pot_chips: f64,
     pub showdown: bool,
-    pub winner_name: String,
-    pub winner_amount: f64,
+    pub winner_names: String,
     pub player_net_bb: Option<f64>,
+    pub player_net_chips: Option<f64>,
 }
 
 pub fn search_hands(data: &GameData, filter: &SearchFilter) -> Vec<SearchResult> {
@@ -37,23 +40,27 @@ pub fn search_hands(data: &GameData, filter: &SearchFilter) -> Vec<SearchResult>
         .filter(|hand| matches_filter(hand, filter))
         .map(|hand| {
             let pot_bb = hand_pot_bb(hand);
-            let (winner_name, winner_amount) = primary_winner(hand);
-            let player_net_bb = filter.player.as_ref().map(|name| {
-                let seat = find_seat(hand, name).unwrap_or(0);
-                if hand.effective_bb > 0.0 {
-                    net_profit(hand, seat) / hand.effective_bb
-                } else {
-                    0.0
+            let pot_chips: f64 = hand.winners.iter().map(|w| w.amount).sum();
+            let winner_names = all_winner_names(hand);
+            let (player_net_bb, player_net_chips) = match filter.player {
+                Some(ref name) => {
+                    let seat = find_seat(hand, name).unwrap_or(0);
+                    let net_chips = net_profit(hand, seat);
+                    let net_bb =
+                        if hand.effective_bb > 0.0 { net_chips / hand.effective_bb } else { 0.0 };
+                    (Some(net_bb), Some(net_chips))
                 }
-            });
+                None => (None, None),
+            };
             SearchResult {
                 hand_number: hand.number,
                 hand_id: hand.id.clone(),
                 pot_bb,
+                pot_chips,
                 showdown: hand.real_showdown,
-                winner_name,
-                winner_amount,
+                winner_names,
                 player_net_bb,
+                player_net_chips,
             }
         })
         .collect();
@@ -124,16 +131,20 @@ fn matches_filter(hand: &Hand, filter: &SearchFilter) -> bool {
     true
 }
 
-fn primary_winner(hand: &Hand) -> (String, f64) {
-    let winner = hand.winners.iter().max_by(|a, b| a.amount.total_cmp(&b.amount));
-    match winner {
-        Some(w) => {
-            let name =
-                hand.players.iter().find(|p| p.seat == w.seat).map_or("?", |p| p.name.as_str());
-            (name.to_owned(), w.amount)
-        }
-        None => (String::new(), 0.0),
-    }
+fn all_winner_names(hand: &Hand) -> String {
+    let mut seen = HashSet::new();
+    let names: Vec<&str> = hand
+        .winners
+        .iter()
+        .filter_map(|w| {
+            if seen.insert(w.seat) {
+                hand.players.iter().find(|p| p.seat == w.seat).map(|p| p.name.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    names.join(", ")
 }
 
 pub fn hand_pot_bb(hand: &Hand) -> f64 {
@@ -149,40 +160,56 @@ fn find_seat(hand: &Hand, name: &str) -> Option<u8> {
     hand.players.iter().find(|p| p.name.to_ascii_lowercase() == lower).map(|p| p.seat)
 }
 
-pub fn print_results(results: &[SearchResult]) {
+pub fn print_results(results: &[SearchResult], use_chips: bool) {
     println!("Found {} hands matching criteria\n", results.len());
     if results.is_empty() {
         return;
     }
     let has_player_net = results.iter().any(|r| r.player_net_bb.is_some());
+    let pot_header = if use_chips { "Pot" } else { "Pot(BB)" };
+    let net_header = "Player Net";
+
     if has_player_net {
         println!(
-            "{:<8} {:<17} {:>8}  {:<9} {:<16} {:>8}  {:>10}",
-            "Hand #", "ID", "Pot(BB)", "Showdown", "Winner", "Amount", "Player Net"
+            "{:<8} {:<17} {:>8}  {:<9} {:<20} {:>10}",
+            "Hand #", "ID", pot_header, "Showdown", "Winner", net_header
         );
-        println!("{}", "-".repeat(82));
+        println!("{}", "-".repeat(76));
     } else {
         println!(
-            "{:<8} {:<17} {:>8}  {:<9} {:<16} {:>8}",
-            "Hand #", "ID", "Pot(BB)", "Showdown", "Winner", "Amount"
+            "{:<8} {:<17} {:>8}  {:<9} {:<20}",
+            "Hand #", "ID", pot_header, "Showdown", "Winner"
         );
-        println!("{}", "-".repeat(70));
+        println!("{}", "-".repeat(64));
     }
     for r in results {
         let sd = if r.showdown { "Yes" } else { "No" };
         let id_short = if r.hand_id.len() > 16 { &r.hand_id[..16] } else { &r.hand_id };
+        let pot_val = if use_chips { r.pot_chips } else { r.pot_bb };
+        let winner_trunc = if r.winner_names.len() > 20 {
+            format!("{}...", &r.winner_names[..17])
+        } else {
+            r.winner_names.clone()
+        };
+
         if has_player_net {
-            let net = r.player_net_bb.map_or_else(String::new, |v| {
-                if v >= 0.0 { format!("+{v:.1}") } else { format!("{v:.1}") }
-            });
+            let net = if use_chips {
+                r.player_net_chips.map_or_else(String::new, |v| {
+                    if v >= 0.0 { format!("+{v:.1}") } else { format!("{v:.1}") }
+                })
+            } else {
+                r.player_net_bb.map_or_else(String::new, |v| {
+                    if v >= 0.0 { format!("+{v:.1}") } else { format!("{v:.1}") }
+                })
+            };
             println!(
-                "{:<8} {:<17} {:>8.1}  {:<9} {:<16} {:>8.1}  {:>10}",
-                r.hand_number, id_short, r.pot_bb, sd, r.winner_name, r.winner_amount, net
+                "{:<8} {:<17} {:>8.1}  {:<9} {:<20} {:>10}",
+                r.hand_number, id_short, pot_val, sd, winner_trunc, net
             );
         } else {
             println!(
-                "{:<8} {:<17} {:>8.1}  {:<9} {:<16} {:>8.1}",
-                r.hand_number, id_short, r.pot_bb, sd, r.winner_name, r.winner_amount
+                "{:<8} {:<17} {:>8.1}  {:<9} {:<20}",
+                r.hand_number, id_short, pot_val, sd, winner_trunc
             );
         }
     }
@@ -345,7 +372,6 @@ mod tests {
 
     #[test]
     fn showdown_player_aware() {
-        // Alice folds preflop, Bob and Charlie go to showdown
         let h = HandBuilder::new()
             .number(1)
             .player("p1", 1, "Alice", 100.0)
@@ -426,6 +452,7 @@ mod tests {
         };
         let results = search_hands(&data, &filter);
         assert!(results[0].player_net_bb.is_some());
+        assert!(results[0].player_net_chips.is_some());
     }
 
     #[test]
@@ -527,13 +554,15 @@ mod tests {
             hand_number: 1,
             hand_id: "test123".into(),
             pot_bb: 5.0,
+            pot_chips: 5.0,
             showdown: true,
-            winner_name: "Alice".into(),
-            winner_amount: 5.0,
+            winner_names: "Alice".into(),
             player_net_bb: Some(3.0),
+            player_net_chips: Some(3.0),
         }];
-        print_results(&results);
-        print_results(&[]);
+        print_results(&results, false);
+        print_results(&results, true);
+        print_results(&[], false);
     }
 
     #[test]
@@ -558,5 +587,64 @@ mod tests {
         assert!(saw_street(&hand, 1, Street::Flop));
         assert!(saw_street(&hand, 2, Street::Flop));
         assert!(!saw_street(&hand, 3, Street::Flop));
+    }
+
+    #[test]
+    fn split_pot_shows_both_winners() {
+        let b = HandBuilder::new()
+            .number(1)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .call(1, 1.0)
+            .check(2)
+            .flop(&["Ah", "Kd", "Qs"])
+            .check(1)
+            .check(2)
+            .showdown()
+            .show(1, &["9s", "8s"])
+            .show(2, &["9c", "8c"])
+            .win(1, 1.0)
+            .win(2, 1.0);
+
+        let data = parse_multi_game_data(&[&b]);
+        let results = search_hands(&data, &default_filter());
+        assert_eq!(results.len(), 1);
+        assert!(results[0].winner_names.contains("Alice"));
+        assert!(results[0].winner_names.contains("Bob"));
+    }
+
+    #[test]
+    fn rit_shows_both_winners() {
+        let b = HandBuilder::new()
+            .number(1)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 50.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .bet_all_in(1, 100.0)
+            .call_all_in(2, 50.0)
+            .uncalled_return(1, 50.0)
+            .rit_vote()
+            .flop(&["Ah", "Kh", "Qs"])
+            .board_run2(1, &["Qc", "Jd", "Ts"])
+            .turn("Js")
+            .board_run2(2, &["9h"])
+            .river("Ts")
+            .board_run2(3, &["8h"])
+            .showdown()
+            .show(1, &["As", "Kd"])
+            .show(2, &["Qh", "Qd"])
+            .win_run(1, 50.0, 1)
+            .win_run(2, 50.0, 2);
+
+        let data = parse_multi_game_data(&[&b]);
+        let results = search_hands(&data, &default_filter());
+        assert_eq!(results.len(), 1);
+        assert!(results[0].winner_names.contains("Alice"));
+        assert!(results[0].winner_names.contains("Bob"));
     }
 }

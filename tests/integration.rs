@@ -186,7 +186,7 @@ fn display_hand_from_real_data() {
 
     let data = load_fixture("sample.json");
     if let Some(hand) = data.hands.first() {
-        display::display_hand(hand);
+        display::display_hand(hand, false);
     }
 }
 
@@ -194,5 +194,5 @@ fn display_hand_from_real_data() {
 fn print_stats_from_real_data() {
     let data = load_fixture("sample.json");
     let result = stats::compute_stats(&data);
-    stats::print_stats(&result);
+    stats::print_stats(&result, false);
 }

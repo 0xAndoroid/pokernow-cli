@@ -1025,6 +1025,163 @@ mod tests {
         assert_eq!(s1.fold_to_three_bets, 0);
     }
 
+    #[test]
+    fn fold_to_three_bet_via_action_marker() {
+        // PokerNow represents preflop folds as ActionMarker (type 11).
+        // Open raiser folds to 3-bet via ActionMarker.
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0) // open raise
+            .action_marker(2) // SB folds (ActionMarker)
+            .bet(3, 9.0) // 3-bet
+            .action_marker(1) // opener folds to 3-bet (ActionMarker)
+            .win(3, 12.5);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(s1.fold_to_three_bet_opp, 1, "opener faced 3-bet");
+        assert_eq!(s1.fold_to_three_bets, 1, "opener folded to 3-bet");
+        assert_eq!(s1.pfr_hands, 1, "opener raised preflop");
+    }
+
+    #[test]
+    fn fold_to_three_bet_with_spurious_fold_and_action_marker() {
+        // Opener has a spurious type-0 fold, then opens, then folds to 3-bet via ActionMarker
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .fold(1) // spurious type-0 fold
+            .bet(1, 3.0) // open raise (proves fold was spurious)
+            .action_marker(2) // SB folds
+            .bet(3, 9.0) // 3-bet
+            .action_marker(1) // opener folds to 3-bet
+            .win(3, 12.5);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(s1.fold_to_three_bet_opp, 1);
+        assert_eq!(s1.fold_to_three_bets, 1);
+    }
+
+    #[test]
+    fn limper_not_counted_for_fold_to_three_bet() {
+        // Limper faces raise then 3-bet → NOT a fold-to-3B opportunity for limper
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .player("p4", 4, "Dave", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .call(1, 1.0) // p1 limps
+            .bet(4, 3.0) // p4 raises (open raiser)
+            .action_marker(2) // SB folds
+            .bet(3, 9.0) // BB 3-bets
+            .action_marker(1) // limper folds
+            .action_marker(4) // opener folds to 3-bet
+            .win(3, 13.5);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(s1.fold_to_three_bet_opp, 0, "limper should not get fold-to-3B opp");
+        assert_eq!(s1.fold_to_three_bets, 0);
+
+        let s4 = stats_for(&data, "p4");
+        assert_eq!(s4.fold_to_three_bet_opp, 1, "open raiser gets the opp");
+        assert_eq!(s4.fold_to_three_bets, 1, "open raiser folded");
+    }
+
+    #[test]
+    fn cold_caller_not_counted_for_fold_to_three_bet() {
+        // Cold-caller faces 3-bet → NOT a fold-to-3B opportunity
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .player("p4", 4, "Dave", 100.0)
+            .dealer(1)
+            .sb(3, 0.5)
+            .bb(4, 1.0)
+            .bet(1, 3.0) // p1 opens
+            .call(2, 3.0) // p2 cold-calls
+            .action_marker(3) // SB folds
+            .bet(4, 12.0) // BB 3-bets (squeeze)
+            .action_marker(1) // opener folds
+            .action_marker(2) // cold-caller folds
+            .win(4, 18.5);
+
+        let data = parse_game_data(&b);
+        let s2 = stats_for(&data, "p2");
+        assert_eq!(s2.fold_to_three_bet_opp, 0, "cold-caller has no fold-to-3B opp");
+
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(s1.fold_to_three_bet_opp, 1);
+        assert_eq!(s1.fold_to_three_bets, 1);
+    }
+
+    #[test]
+    fn fold_to_cbet_via_action_marker() {
+        // Player folds to c-bet via ActionMarker on flop
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0)
+            .action_marker(2)
+            .call(3, 3.0)
+            .flop(&["Ah", "Kd", "Qs"])
+            .bet(1, 4.0) // c-bet
+            .action_marker(3) // folds to c-bet via ActionMarker
+            .win(1, 10.0);
+
+        let data = parse_game_data(&b);
+        let s3 = stats_for(&data, "p3");
+        assert_eq!(s3.fold_to_cbet_opp, 1, "BB faced c-bet");
+        assert_eq!(s3.fold_to_cbets, 1, "BB folded to c-bet");
+    }
+
+    #[test]
+    fn three_bet_opp_includes_action_marker_folds() {
+        // Players who fold to open raise via ActionMarker should get 3-bet opportunity
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .player("p4", 4, "Dave", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0) // open
+            .action_marker(4) // folds to open (had 3-bet opportunity)
+            .action_marker(2) // SB folds to open
+            .call(3, 3.0) // BB calls
+            .flop(&["Ah", "Kd", "Qs"])
+            .check(1)
+            .check(3)
+            .win(1, 6.5);
+
+        let data = parse_game_data(&b);
+        let s4 = stats_for(&data, "p4");
+        assert_eq!(s4.three_bet_opp, 1, "folding to open = had 3-bet opportunity");
+        assert_eq!(s4.three_bets, 0);
+
+        let s2 = stats_for(&data, "p2");
+        assert_eq!(s2.three_bet_opp, 1, "SB folding to open = had 3-bet opportunity");
+    }
+
     // --- C-Bet ---
 
     #[test]

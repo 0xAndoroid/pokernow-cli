@@ -549,7 +549,7 @@ fn process_events(
 
 fn map_kind(event_type: u8) -> Option<ActionType> {
     match event_type {
-        0 => Some(ActionType::Fold),
+        0 | 11 => Some(ActionType::Fold),
         1 => Some(ActionType::Check),
         2 => Some(ActionType::BigBlind),
         3 => Some(ActionType::SmallBlind),
@@ -563,32 +563,47 @@ fn map_kind(event_type: u8) -> Option<ActionType> {
 }
 
 fn remove_spurious_folds(events: &[RawEvent], streets: &mut [StreetData]) {
-    let mut last_fold_idx: HashMap<u8, usize> = HashMap::new();
-    let mut has_later_action: HashMap<u8, bool> = HashMap::new();
+    // A spurious fold is one where the player acts again afterward (check/call/bet/win).
+    // Only remove folds that precede the player's last non-fold action;
+    // folds after the last non-fold action are legitimate (e.g. fold to 3-bet).
 
+    // Step 1: find the last non-fold action index per seat
+    // type 12 (SHOW) excluded: folding then showing is legitimate
+    let mut last_nonfold: HashMap<u8, usize> = HashMap::new();
     for (i, ev) in events.iter().enumerate() {
         let p = &ev.payload;
         let Some(seat) = p.seat else { continue };
-        match p.event_type {
-            0 => {
-                last_fold_idx.insert(seat, i);
-            }
-            // type 12 (SHOW) excluded: a player can fold then show cards
-            1 | 7 | 8 | 10 => {
-                if let Some(&fold_i) = last_fold_idx.get(&seat)
-                    && i > fold_i
-                {
-                    has_later_action.insert(seat, true);
-                }
-            }
-            _ => {}
+        if matches!(p.event_type, 1 | 7 | 8 | 10) {
+            last_nonfold.insert(seat, i);
         }
     }
 
-    let spurious_seats: Vec<u8> = has_later_action.keys().copied().collect();
+    // Step 2: count spurious folds per seat (folds before last non-fold action)
+    // Only type 0 events can be spurious; type 11 (ActionMarker) folds are always real.
+    let mut spurious_count: HashMap<u8, u32> = HashMap::new();
+    for (i, ev) in events.iter().enumerate() {
+        let p = &ev.payload;
+        let Some(seat) = p.seat else { continue };
+        if p.event_type == 0
+            && let Some(&last_i) = last_nonfold.get(&seat)
+            && i < last_i
+        {
+            *spurious_count.entry(seat).or_insert(0) += 1;
+        }
+    }
 
+    // Step 3: remove only the first N folds per seat (processed streets preserve event order)
     for sd in streets.iter_mut() {
-        sd.actions.retain(|a| !(a.kind == ActionType::Fold && spurious_seats.contains(&a.seat)));
+        sd.actions.retain(|a| {
+            if a.kind == ActionType::Fold
+                && let Some(n) = spurious_count.get_mut(&a.seat)
+                && *n > 0
+            {
+                *n -= 1;
+                return false;
+            }
+            true
+        });
     }
 }
 
@@ -862,6 +877,10 @@ pub mod test_helpers {
 
         pub fn dead_blind(self, seat: u8, value: f64) -> Self {
             self.event(serde_json::json!({"type": 6, "seat": seat, "value": value}))
+        }
+
+        pub fn action_marker(self, seat: u8) -> Self {
+            self.event(serde_json::json!({"type": 11, "seat": seat}))
         }
 
         pub fn build_json(&self) -> String {
@@ -1719,5 +1738,102 @@ mod tests {
             s1_no.net_bb,
             s1_yes.net_bb,
         );
+    }
+
+    #[test]
+    fn action_marker_parsed_as_fold() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0)
+            .action_marker(2) // SB folds via ActionMarker
+            .action_marker(3) // BB folds via ActionMarker
+            .win(1, 1.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let preflop = &hand.streets[0];
+
+        let fold_count = preflop.actions.iter().filter(|a| a.kind == ActionType::Fold).count();
+        assert_eq!(fold_count, 2, "both ActionMarker events should become folds");
+    }
+
+    #[test]
+    fn spurious_fold_kept_when_legitimate() {
+        // Type 0 fold that is NOT followed by any non-fold action → legitimate, keep it
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0)
+            .fold(2) // type 0 fold, no later action for seat 2 → legitimate
+            .fold(3)
+            .win(1, 1.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let preflop = &hand.streets[0];
+        let fold_count = preflop.actions.iter().filter(|a| a.kind == ActionType::Fold).count();
+        assert_eq!(fold_count, 2, "legitimate type 0 folds must be kept");
+    }
+
+    #[test]
+    fn spurious_fold_removed_but_later_fold_kept() {
+        // Seat 1 has: spurious fold → open raise → legitimate fold to 3-bet
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .fold(1) // spurious type 0 fold (seat 1 bets right after)
+            .bet(1, 3.0) // open raise
+            .action_marker(2) // SB folds
+            .bet(3, 9.0) // 3-bet
+            .fold(1) // legitimate fold to 3-bet (type 0, after last non-fold action)
+            .win(3, 12.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let preflop = &hand.streets[0];
+
+        // Seat 1's spurious fold removed, legitimate fold kept
+        let seat1_folds: Vec<_> =
+            preflop.actions.iter().filter(|a| a.seat == 1 && a.kind == ActionType::Fold).collect();
+        assert_eq!(seat1_folds.len(), 1, "only the legitimate fold should remain");
+
+        // The fold should come after the bet actions (it's the fold-to-3-bet)
+        let fold_pos =
+            preflop.actions.iter().position(|a| a.seat == 1 && a.kind == ActionType::Fold).unwrap();
+        let last_bet_pos = preflop.actions.iter().rposition(|a| a.kind == ActionType::Bet).unwrap();
+        assert!(fold_pos > last_bet_pos, "fold should come after the 3-bet");
+    }
+
+    #[test]
+    fn action_marker_fold_not_removed_as_spurious() {
+        // ActionMarker folds (type 11) should never be treated as spurious
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0)
+            .action_marker(2) // SB folds via ActionMarker
+            .bet(3, 9.0) // 3-bet
+            .action_marker(1) // opener folds to 3-bet via ActionMarker
+            .win(3, 12.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let preflop = &hand.streets[0];
+        let folds: Vec<u8> =
+            preflop.actions.iter().filter(|a| a.kind == ActionType::Fold).map(|a| a.seat).collect();
+        assert_eq!(folds, vec![2, 1], "both ActionMarker folds must be preserved");
     }
 }

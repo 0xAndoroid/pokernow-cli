@@ -585,20 +585,20 @@ fn parse_card_strings(cards: &[String]) -> Option<Vec<Card>> {
 }
 
 pub fn net_profit(hand: &Hand, seat: u8) -> f64 {
-    let mut ante_total = 0.0_f64;
+    let mut additive_total = 0.0_f64;
     let mut street_maxes = [0.0_f64; 4];
     for (i, sd) in hand.streets.iter().enumerate() {
         for a in &sd.actions {
             if a.seat == seat && is_monetary(a.kind) {
-                if a.kind == ActionType::Ante {
-                    ante_total += a.amount;
+                if matches!(a.kind, ActionType::Ante | ActionType::DeadBlind) {
+                    additive_total += a.amount;
                 } else {
                     street_maxes[i] = street_maxes[i].max(a.amount);
                 }
             }
         }
     }
-    let invested: f64 = ante_total + street_maxes.iter().sum::<f64>();
+    let invested: f64 = additive_total + street_maxes.iter().sum::<f64>();
     let won: f64 = hand.winners.iter().filter(|w| w.seat == seat).map(|w| w.amount).sum();
     let returned = hand.uncalled_returns.get(&seat).copied().unwrap_or(0.0);
     won + returned - invested
@@ -1270,6 +1270,50 @@ mod tests {
         let profit_p1 = net_profit(&hand, 1);
         // invested: ante 0.25 + sb 0.5 = 0.75, won 0, returned 0 → -0.75
         assert!((profit_p1 - (-0.75)).abs() < 0.001);
+    }
+
+    #[test]
+    fn net_profit_with_dead_blind() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .dead_blind(1, 1.0) // extra posting, additive
+            .fold(1)
+            .fold(2)
+            .win(3, 2.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let profit_p1 = net_profit(&hand, 1);
+        // invested: dead blind 1.0 (additive), won 0, returned 0 → -1.0
+        assert!((profit_p1 - (-1.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn net_profit_dead_blind_plus_blind() {
+        // Player posts both dead blind and small blind — both count.
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(3)
+            .dead_blind(1, 1.0)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .fold(3)
+            .win(2, 2.5);
+
+        let hand = parse_single_hand(&b).unwrap();
+        let profit_p1 = net_profit(&hand, 1);
+        // invested: dead blind 1.0 (additive) + sb 0.5 (max on street) = 1.5
+        assert!(
+            (profit_p1 - (-1.5)).abs() < 0.001,
+            "dead blind + sb should both count; got {profit_p1}"
+        );
     }
 
     #[test]

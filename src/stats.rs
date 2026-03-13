@@ -457,12 +457,28 @@ fn process_showdown(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
     }
 }
 
+fn player_invested(hand: &Hand, seat: u8) -> f64 {
+    let mut additive = 0.0_f64;
+    let mut street_maxes = [0.0_f64; 4];
+    for (i, sd) in hand.streets.iter().enumerate() {
+        for a in &sd.actions {
+            if a.seat == seat && crate::parser::is_monetary(a.kind) {
+                if matches!(a.kind, ActionType::Ante | ActionType::DeadBlind) {
+                    additive += a.amount;
+                } else {
+                    street_maxes[i] = street_maxes[i].max(a.amount);
+                }
+            }
+        }
+    }
+    additive + street_maxes.iter().sum::<f64>()
+}
+
 fn process_all_in_ev(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
     if !hand.real_showdown {
         return;
     }
 
-    // Track the last street on which any player went all-in.
     let mut last_ai_street: Option<Street> = None;
     for sd in &hand.streets {
         if sd.actions.iter().any(|a| a.all_in) {
@@ -471,9 +487,6 @@ fn process_all_in_ev(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
     }
     let Some(ai_street) = last_ai_street else { return };
 
-    // EV is only meaningful when no further voluntary betting follows the all-in.
-    // A covering player calling the all-in on the same street is fine; we only
-    // check for Bet/Call on streets strictly after the last all-in street.
     let has_action_after = hand.streets.iter().any(|sd| {
         sd.street > ai_street
             && sd.actions.iter().any(|a| matches!(a.kind, ActionType::Bet | ActionType::Call))
@@ -490,7 +503,6 @@ fn process_all_in_ev(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
         .map(|a| a.seat)
         .collect();
 
-    // Include all non-folded players with known hole cards — covering players too.
     let mut known: Vec<(u8, &Vec<Card>)> = Vec::new();
     for p in &hand.players {
         if folded_seats.contains(&p.seat) {
@@ -508,11 +520,60 @@ fn process_all_in_ev(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
     }
 
     let board = board_at_street(hand, ai_street);
-    let equities = calculate_multi_equity(&known, &board, hand);
 
-    // Contested pot = chips awarded at showdown. Uncalled returns are never in
-    // contest and must not inflate the pot or the actual-received figures.
-    let contested_pot: f64 = hand.winners.iter().map(|w| w.amount).sum();
+    let folded_invested: f64 = hand
+        .players
+        .iter()
+        .filter(|p| folded_seats.contains(&p.seat))
+        .map(|p| player_invested(hand, p.seat))
+        .sum();
+
+    let mut investments: Vec<f64> =
+        known.iter().map(|&(seat, _)| player_invested(hand, seat)).collect();
+    for &(seat, _) in &known {
+        if let Some(&ret) = hand.uncalled_returns.get(&seat) {
+            let idx = known.iter().position(|&(s, _)| s == seat).unwrap();
+            investments[idx] -= ret;
+        }
+    }
+
+    let mut sorted_inv: Vec<f64> = investments.clone();
+    sorted_inv.sort_unstable_by(f64::total_cmp);
+    sorted_inv.dedup();
+
+    let n = known.len();
+    let mut ev_expected = vec![0.0_f64; n];
+
+    // Build pot slices. Each slice is contested by eligible players only.
+    // Equity must be computed per-slice because the eligible player subset
+    // changes, and global equity renormalization is incorrect (a player who
+    // loses to a non-eligible player may still win the side pot).
+    let mut prev_threshold = 0.0_f64;
+    for &threshold in &sorted_inv {
+        let marginal = threshold - prev_threshold;
+        if marginal <= 0.0 {
+            continue;
+        }
+
+        let eligible: Vec<usize> = (0..n).filter(|&i| investments[i] >= threshold).collect();
+        if eligible.len() < 2 {
+            prev_threshold = threshold;
+            continue;
+        }
+
+        let slice_size = marginal * eligible.len() as f64;
+        let dead_in_slice = if prev_threshold == 0.0 { folded_invested } else { 0.0 };
+        let total_slice = slice_size + dead_in_slice;
+
+        let slice_players: Vec<(u8, &Vec<Card>)> = eligible.iter().map(|&i| known[i]).collect();
+        let slice_eq = calculate_multi_equity(&slice_players, &board, hand);
+
+        for (j, &i) in eligible.iter().enumerate() {
+            ev_expected[i] += slice_eq[j] * total_slice;
+        }
+
+        prev_threshold = threshold;
+    }
 
     let seat_to_id: HashMap<u8, &str> =
         hand.players.iter().map(|p| (p.seat, p.id.as_str())).collect();
@@ -521,9 +582,7 @@ fn process_all_in_ev(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
         let actual_from_pot: f64 =
             hand.winners.iter().filter(|w| w.seat == seat).map(|w| w.amount).sum();
 
-        // Positive = ran below EV (expected more than received); divided by BB
-        // so it's on the same scale as net_bb for the EV-adjusted display.
-        let ev_diff = (equities[i] * contested_pot - actual_from_pot) / hand.big_blind;
+        let ev_diff = (ev_expected[i] - actual_from_pot) / hand.big_blind;
 
         if let Some(id) = seat_to_id.get(&seat)
             && let Some(stats) = map.get_mut(*id)
@@ -1305,6 +1364,105 @@ mod tests {
             "ev_diff(BB=1)={} ev_diff(BB=2)={} — must be equal when stacks are proportional",
             s1.all_in_ev_diff,
             s2.all_in_ev_diff
+        );
+    }
+
+    // 3-way all-in with unequal stacks. Short stack can only win main pot.
+    // Equity must be computed per pot slice with per-slice eligible players.
+    #[test]
+    fn all_in_ev_multiway_side_pot() {
+        // p1 (50 chips), p2 (200 chips), p3 (200 chips).
+        // Main pot = 50*3 = 150 (all 3). Side pot = 150*2 = 300 (p2+p3).
+        // p1 has AA, p2 has KK, p3 has QQ. p1 wins main, p2 wins side.
+        let b = HandBuilder::new()
+            .blinds(0.5, 1.0)
+            .player_with_hand("p1", 1, "Alice", 50.0, &["Ah", "Ad"])
+            .player_with_hand("p2", 2, "Bob", 200.0, &["Kh", "Kd"])
+            .player_with_hand("p3", 3, "Carol", 200.0, &["Qh", "Qd"])
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet_all_in(1, 50.0)
+            .call(2, 50.0)
+            .bet_all_in(3, 200.0)
+            .call_all_in(2, 200.0)
+            .flop(&["2c", "3d", "4s"])
+            .turn("5h")
+            .river("9c")
+            .showdown()
+            .show(1, &["Ah", "Ad"])
+            .show(2, &["Kh", "Kd"])
+            .show(3, &["Qh", "Qd"])
+            .win(1, 150.0)
+            .win(2, 300.0);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        let s2 = stats_for(&data, "p2");
+        let s3 = stats_for(&data, "p3");
+
+        assert_eq!(s1.all_in_hands, 1);
+        assert_eq!(s2.all_in_hands, 1);
+        assert_eq!(s3.all_in_hands, 1);
+
+        // Conservation: EV diffs must sum to zero across all players.
+        let total_ev = s1.all_in_ev_diff + s2.all_in_ev_diff + s3.all_in_ev_diff;
+        assert!(
+            total_ev.abs() < 1.0,
+            "ev_diffs must sum to ~0, got {total_ev:.2} (p1={:.2}, p2={:.2}, p3={:.2})",
+            s1.all_in_ev_diff,
+            s2.all_in_ev_diff,
+            s3.all_in_ev_diff
+        );
+
+        // Short stack won the main pot. AA has ~67% equity vs KK+QQ preflop.
+        // p1's EV < main pot (150) because equity < 100%. Since p1 actually
+        // received 150 (more than EV), ev_diff must be < 0 (ran above EV).
+        assert!(
+            s1.all_in_ev_diff < 0.0,
+            "short stack AA won max; ev_diff should be < 0 (ran above EV), got {:.2}",
+            s1.all_in_ev_diff
+        );
+    }
+
+    // 2-player all-in where one player folds: EV should still track for the 2 remaining.
+    #[test]
+    fn all_in_ev_with_folded_player_dead_money() {
+        // p3 raises then folds to a 3-bet shove. p1 and p2 go to showdown.
+        // p3's money is dead money in the pot.
+        let b = HandBuilder::new()
+            .blinds(0.5, 1.0)
+            .player_with_hand("p1", 1, "Alice", 100.0, &["Ah", "Ad"])
+            .player_with_hand("p2", 2, "Bob", 100.0, &["Kh", "Kd"])
+            .player("p3", 3, "Carol", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0)
+            .fold(2)
+            .bet(3, 10.0)
+            .bet_all_in(1, 100.0)
+            .call_all_in(2, 100.0)
+            .fold(3)
+            .flop(&["2c", "3d", "4s"])
+            .turn("5h")
+            .river("9c")
+            .showdown()
+            .show(1, &["Ah", "Ad"])
+            .show(2, &["Kh", "Kd"])
+            .win(1, 210.0);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        let s2 = stats_for(&data, "p2");
+
+        assert_eq!(s1.all_in_hands, 1);
+        assert_eq!(s2.all_in_hands, 1);
+
+        let total_ev = s1.all_in_ev_diff + s2.all_in_ev_diff;
+        assert!(
+            total_ev.abs() < 0.1,
+            "ev_diffs must sum to ~0 for the 2 contesting players, got {total_ev:.2}"
         );
     }
 

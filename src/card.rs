@@ -482,7 +482,7 @@ fn detect_draws(hole: &[Card], board: &[Card], _rank: &HandRank) -> Vec<String> 
         draws.push(fd);
     }
 
-    if let Some(sd) = detect_straight_draw(&all_cards) {
+    if let Some(sd) = detect_straight_draw(hole, &all_cards, board) {
         draws.push(sd);
     }
 
@@ -512,36 +512,53 @@ fn detect_flush_draw(hole: &[Card], all: &[Card]) -> Option<String> {
     None
 }
 
-fn detect_straight_draw(all: &[Card]) -> Option<String> {
+fn detect_straight_draw(hole: &[Card], all: &[Card], board: &[Card]) -> Option<String> {
     let mut present = [false; 15];
     for c in all {
         present[c.rank() as usize] = true;
     }
-    // Ace also counts as 1 for low straights
     if present[14] {
         present[1] = true;
     }
 
-    // Check all windows of 5 consecutive ranks for OESD and gutshots
+    let mut board_present = [false; 15];
+    for c in board {
+        board_present[c.rank() as usize] = true;
+    }
+    if board_present[14] {
+        board_present[1] = true;
+    }
+
+    let mut hole_ranks: Vec<u8> = hole.iter().map(|c| c.rank()).collect();
+    if hole_ranks.contains(&14) {
+        hole_ranks.push(1);
+    }
+
     let mut oesd = false;
     let mut gutshot = false;
 
     for low in 1..=10u8 {
         let high = low + 4;
         let count = (low..=high).filter(|&r| present[r as usize]).count();
-
-        // Already have a straight with these 5 — skip
         if count == 5 {
             continue;
         }
+        if count != 4 {
+            continue;
+        }
 
-        if count == 4 {
-            let missing = (low..=high).find(|&r| !present[r as usize]).unwrap();
-            if missing == low || missing == high {
-                oesd = true;
-            } else {
-                gutshot = true;
-            }
+        // Board-only draw: all 4 present ranks come from the board alone.
+        let board_count = (low..=high).filter(|&r| board_present[r as usize]).count();
+        let hole_contributes = (low..=high).any(|r| present[r as usize] && hole_ranks.contains(&r));
+        if board_count >= 4 || !hole_contributes {
+            continue;
+        }
+
+        let missing = (low..=high).find(|&r| !present[r as usize]).unwrap();
+        if missing == low || missing == high {
+            oesd = true;
+        } else {
+            gutshot = true;
         }
     }
 
@@ -1000,6 +1017,39 @@ mod tests {
         let board = cards(&["6c", "5h", "2s", "Kd", "Qh"]);
         let desc = holding_description(&hole, &board);
         assert!(!desc.contains("draw"), "no draws on river, got: {desc}");
+    }
+
+    #[test]
+    fn board_only_straight_draw_not_reported() {
+        // Board has 5-6-7, hole cards are Ac Kd — no hole card contributes to the draw.
+        let hole = cards(&["Ac", "Kd"]);
+        let board = cards(&["5c", "6h", "7d"]);
+        let desc = holding_description(&hole, &board);
+        assert!(
+            !desc.contains("straight draw"),
+            "board-only straight draw should not be reported, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn board_only_flush_draw_not_reported() {
+        // Board has 3 spades, hole cards have no spades.
+        let hole = cards(&["Ac", "Kd"]);
+        let board = cards(&["2s", "5s", "9s"]);
+        let desc = holding_description(&hole, &board);
+        assert!(
+            !desc.contains("flush draw"),
+            "board-only flush draw should not be reported, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn hole_contributing_straight_draw_reported() {
+        // Board has 5-6, hole has 8-7 → 5-6-7-8 = OESD (hole contributes)
+        let hole = cards(&["8s", "7d"]);
+        let board = cards(&["6c", "5h", "2s"]);
+        let desc = holding_description(&hole, &board);
+        assert!(desc.contains("straight draw"), "expected straight draw, got: {desc}");
     }
 
     // --- HandRank::worst ---

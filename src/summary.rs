@@ -63,7 +63,7 @@ fn fmt_pct(num: u32, den: u32) -> String {
 }
 
 fn format_chips(amount: f64) -> String {
-    if amount.fract() == 0.0 { format!("{}", amount as i64) } else { format!("{amount}") }
+    crate::format_chips(amount)
 }
 
 #[cfg(test)]

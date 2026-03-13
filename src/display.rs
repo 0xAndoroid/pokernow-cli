@@ -354,7 +354,7 @@ fn format_cards(cards: &[Card]) -> String {
 }
 
 fn format_chips(amount: f64) -> String {
-    if amount.fract() == 0.0 { format!("{}", amount as i64) } else { format!("{amount}") }
+    crate::format_chips(amount)
 }
 
 fn format_bb(amount: f64) -> String {

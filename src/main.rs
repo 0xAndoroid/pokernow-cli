@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+use poker_cli::TableSize;
 use poker_cli::config::{BlindRemap, Config};
 use poker_cli::display;
 use poker_cli::parser::{self, GameData};
@@ -37,6 +38,10 @@ struct Cli {
     /// Force file format (auto-detects from extension if omitted)
     #[arg(long)]
     log_format: Option<LogFormat>,
+
+    /// Filter by table size: hu (2), short (3-6), full (7+). Comma-separated.
+    #[arg(long, default_value = "short,full")]
+    format: String,
 
     #[command(subcommand)]
     command: Command,
@@ -130,6 +135,20 @@ fn parse_sort_field(s: &str) -> SortField {
         "pot" => SortField::Pot,
         _ => SortField::HandId,
     }
+}
+
+fn parse_table_sizes(s: &str) -> HashSet<TableSize> {
+    s.split(',')
+        .filter_map(|part| match part.trim() {
+            "hu" => Some(TableSize::HeadsUp),
+            "short" => Some(TableSize::Short),
+            "full" => Some(TableSize::Full),
+            other => {
+                eprintln!("Warning: unknown table size '{other}', expected: hu, short, full");
+                None
+            }
+        })
+        .collect()
 }
 
 enum CliAction {
@@ -235,6 +254,7 @@ fn main() {
     let cli = Cli::parse();
     let no_config = cli.no_config;
     let log_format = cli.log_format;
+    let table_sizes = parse_table_sizes(&cli.format);
 
     let (files, action) = match cli.command {
         Command::Stats { files, player } => (files.files, CliAction::Stats(player)),
@@ -291,13 +311,20 @@ fn main() {
         eprintln!("Loaded {} file(s) from config.toml", files.len());
     }
 
-    let data = match parse_all_files(&files, log_format, &unify_map, &blind_remap) {
+    let mut data = match parse_all_files(&files, log_format, &unify_map, &blind_remap) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("Failed to parse hand history: {e}");
             process::exit(1);
         }
     };
+
+    let pre_filter = data.hands.len();
+    data.hands.retain(|h| table_sizes.contains(&TableSize::from_player_count(h.players.len())));
+    let filtered = pre_filter - data.hands.len();
+    if filtered > 0 {
+        eprintln!("Filtered {filtered} hands by table size ({pre_filter} → {})", data.hands.len());
+    }
 
     match action {
         CliAction::Stats(player_filter) => {

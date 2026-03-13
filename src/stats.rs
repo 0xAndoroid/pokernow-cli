@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 use crate::card::{Card, evaluate};
-use crate::parser::{ActionType, GameData, Hand, Position, Street, StreetData, net_profit};
+use crate::parser::{
+    ActionType, GameData, Hand, Position, Street, StreetData, invested, net_profit,
+};
 
 #[derive(Default)]
 pub struct PlayerStats {
@@ -266,6 +268,16 @@ fn process_preflop(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
                     }
                 }
 
+                // 4-bet by the open raiser = they faced the 3-bet (opportunity)
+                // but chose to re-raise instead of folding or calling.
+                if raise_count == 3
+                    && three_bettor.is_some()
+                    && Some(seat) == open_raiser
+                    && let Some(stats) = map.get_mut(id)
+                {
+                    stats.fold_to_three_bet_opp += 1;
+                }
+
                 if raise_count == 2
                     && !has_voluntarily_acted.contains(&seat)
                     && seat_to_pos.get(&seat) != Some(&Position::BB)
@@ -457,23 +469,6 @@ fn process_showdown(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
     }
 }
 
-fn player_invested(hand: &Hand, seat: u8) -> f64 {
-    let mut additive = 0.0_f64;
-    let mut street_maxes = [0.0_f64; 4];
-    for (i, sd) in hand.streets.iter().enumerate() {
-        for a in &sd.actions {
-            if a.seat == seat && crate::parser::is_monetary(a.kind) {
-                if matches!(a.kind, ActionType::Ante | ActionType::DeadBlind) {
-                    additive += a.amount;
-                } else {
-                    street_maxes[i] = street_maxes[i].max(a.amount);
-                }
-            }
-        }
-    }
-    additive + street_maxes.iter().sum::<f64>()
-}
-
 fn process_all_in_ev(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
     if !hand.real_showdown {
         return;
@@ -525,11 +520,10 @@ fn process_all_in_ev(hand: &Hand, map: &mut HashMap<&str, PlayerStats>) {
         .players
         .iter()
         .filter(|p| folded_seats.contains(&p.seat))
-        .map(|p| player_invested(hand, p.seat))
+        .map(|p| invested(hand, p.seat))
         .sum();
 
-    let mut investments: Vec<f64> =
-        known.iter().map(|&(seat, _)| player_invested(hand, seat)).collect();
+    let mut investments: Vec<f64> = known.iter().map(|&(seat, _)| invested(hand, seat)).collect();
     for &(seat, _) in &known {
         if let Some(&ret) = hand.uncalled_returns.get(&seat) {
             let idx = known.iter().position(|&(s, _)| s == seat).unwrap();
@@ -981,6 +975,58 @@ mod tests {
         let s1 = stats_for(&data, "p1");
         assert_eq!(s1.fold_to_three_bets, 1);
         assert_eq!(s1.fold_to_three_bet_opp, 1);
+    }
+
+    // Open → 3-bet → 4-bet: opener faced the 3-bet (fold_to_three_bet_opp)
+    // but didn't fold (fold_to_three_bets stays 0).
+    #[test]
+    fn fold_to_three_bet_opp_counted_on_4bet() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0) // open raise
+            .bet(2, 9.0) // 3-bet
+            .fold(3)
+            .bet(1, 27.0) // 4-bet (open raiser re-raises)
+            .fold(2)
+            .win(1, 36.0);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(
+            s1.fold_to_three_bet_opp, 1,
+            "open raiser faced the 3-bet (4-bet counts as an opportunity)"
+        );
+        assert_eq!(s1.fold_to_three_bets, 0, "open raiser did not fold to the 3-bet");
+    }
+
+    // Open → 3-bet → call: fold_to_three_bet_opp = 1, fold_to_three_bets = 0.
+    #[test]
+    fn fold_to_three_bet_call_counted_as_opp() {
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0) // open
+            .bet(2, 9.0) // 3-bet
+            .fold(3)
+            .call(1, 9.0) // call the 3-bet
+            .flop(&["Ah", "Kd", "Qs"])
+            .check(1)
+            .check(2)
+            .win(1, 19.0);
+
+        let data = parse_game_data(&b);
+        let s1 = stats_for(&data, "p1");
+        assert_eq!(s1.fold_to_three_bet_opp, 1);
+        assert_eq!(s1.fold_to_three_bets, 0);
     }
 
     // --- C-Bet ---

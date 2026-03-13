@@ -57,7 +57,7 @@ pub fn print_summary(data: &GameData) {
 
     if let Some(winner) = stats.first() {
         println!();
-        println!("Biggest winner: {} (+{:.1} BB)", winner.name, winner.net_bb);
+        println!("Biggest winner: {} ({:+.1} BB)", winner.name, winner.net_bb);
     }
     if let Some(loser) = stats.last()
         && loser.net_bb < 0.0
@@ -132,6 +132,24 @@ mod tests {
             .win(2, 3.0);
 
         let data = parse_multi_game_data(&[&h1, &h2]);
+        print_summary(&data);
+    }
+
+    #[test]
+    fn summary_all_losers_no_double_sign() {
+        // Both players lose (rake-like scenario): biggest "winner" has negative P&L.
+        // The output must not contain "+-".
+        let b = HandBuilder::new()
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .call(1, 1.0)
+            .check(2)
+            .win(1, 1.5); // rake took 0.5
+
+        let data = parse_game_data(&b);
         print_summary(&data);
     }
 }

@@ -600,7 +600,7 @@ fn parse_card_strings(cards: &[String]) -> Option<Vec<Card>> {
     if parsed.is_empty() { None } else { Some(parsed) }
 }
 
-pub fn net_profit(hand: &Hand, seat: u8) -> f64 {
+pub fn invested(hand: &Hand, seat: u8) -> f64 {
     let mut additive_total = 0.0_f64;
     let mut street_maxes = [0.0_f64; 4];
     for (i, sd) in hand.streets.iter().enumerate() {
@@ -614,10 +614,14 @@ pub fn net_profit(hand: &Hand, seat: u8) -> f64 {
             }
         }
     }
-    let invested: f64 = additive_total + street_maxes.iter().sum::<f64>();
+    additive_total + street_maxes.iter().sum::<f64>()
+}
+
+pub fn net_profit(hand: &Hand, seat: u8) -> f64 {
+    let cost = invested(hand, seat);
     let won: f64 = hand.winners.iter().filter(|w| w.seat == seat).map(|w| w.amount).sum();
     let returned = hand.uncalled_returns.get(&seat).copied().unwrap_or(0.0);
-    won + returned - invested
+    won + returned - cost
 }
 
 pub fn is_monetary(at: ActionType) -> bool {

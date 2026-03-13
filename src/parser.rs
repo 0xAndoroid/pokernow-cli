@@ -1745,7 +1745,7 @@ mod tests {
 
         let no_remap = parse_game_data(&b);
         let stats_no = crate::stats::compute_stats(&no_remap);
-        let s1_no = stats_no.players.iter().find(|s| s.player_id == "p1").unwrap();
+        let s1_no = stats_no.players.iter().find(|s| s.name == "Alice").unwrap();
 
         let remap = vec![crate::config::BlindRemap {
             from: [1.0, 1.0],
@@ -1753,7 +1753,7 @@ mod tests {
         }];
         let with_remap = parse_game_data_with_remap(&b, &remap);
         let stats_yes = crate::stats::compute_stats(&with_remap);
-        let s1_yes = stats_yes.players.iter().find(|s| s.player_id == "p1").unwrap();
+        let s1_yes = stats_yes.players.iter().find(|s| s.name == "Alice").unwrap();
 
         // net_bb should be halved: same chip profit, double the BB
         assert!(
@@ -1964,7 +1964,7 @@ mod tests {
 
         let data = parse_game_data(&b);
         let result = crate::stats::compute_stats(&data);
-        let alice = result.players.iter().find(|s| s.player_id == "p1").unwrap();
+        let alice = result.players.iter().find(|s| s.name == "Alice").unwrap();
         assert_eq!(alice.vpip_hands, 0, "straddle alone should not count as VPIP");
     }
 
@@ -1985,7 +1985,7 @@ mod tests {
 
         let data = parse_game_data(&b);
         let result = crate::stats::compute_stats(&data);
-        let alice = result.players.iter().find(|s| s.player_id == "p1").unwrap();
+        let alice = result.players.iter().find(|s| s.name == "Alice").unwrap();
         // Alice invested 2.0 (straddle), won 3.5 → net +1.5 chips / 2.0 effective BB = +0.75
         assert!(
             (alice.net_bb - 0.75).abs() < 0.001,

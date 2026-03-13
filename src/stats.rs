@@ -100,14 +100,22 @@ pub struct StatsResult {
     pub players: Vec<PlayerStats>,
 }
 
+fn resolve_name(data: &GameData, p: &crate::parser::PlayerInHand) -> String {
+    data.player_names.get(&p.id).cloned().unwrap_or_else(|| p.name.clone())
+}
+
 pub fn compute_stats(data: &GameData) -> StatsResult {
-    let mut map: HashMap<&str, PlayerStats> = HashMap::new();
+    let mut map: HashMap<String, PlayerStats> = HashMap::new();
 
     for hand in &data.hands {
+        let seat_to_name: HashMap<u8, String> =
+            hand.players.iter().map(|p| (p.seat, resolve_name(data, p))).collect();
+
         for p in &hand.players {
-            let stats = map.entry(p.id.as_str()).or_insert_with(|| PlayerStats {
+            let name = &seat_to_name[&p.seat];
+            let stats = map.entry(name.clone()).or_insert_with(|| PlayerStats {
                 player_id: p.id.clone(),
-                name: data.player_names.get(&p.id).cloned().unwrap_or_else(|| p.name.clone()),
+                name: name.clone(),
                 ..PlayerStats::default()
             });
 
@@ -125,13 +133,10 @@ pub fn compute_stats(data: &GameData) -> StatsResult {
             }
         }
 
-        let seat_to_id: HashMap<u8, &str> =
-            hand.players.iter().map(|p| (p.seat, p.id.as_str())).collect();
-
-        process_preflop(hand, &seat_to_id, &mut map);
-        process_postflop(hand, &seat_to_id, &mut map);
-        process_showdown(hand, &seat_to_id, &mut map);
-        process_all_in_ev(hand, &seat_to_id, &mut map);
+        process_preflop(hand, &seat_to_name, &mut map);
+        process_postflop(hand, &seat_to_name, &mut map);
+        process_showdown(hand, &seat_to_name, &mut map);
+        process_all_in_ev(hand, &seat_to_name, &mut map);
     }
 
     let mut players: Vec<PlayerStats> = map.into_values().collect();
@@ -144,8 +149,8 @@ pub fn compute_stats(data: &GameData) -> StatsResult {
 
 fn process_preflop(
     hand: &Hand,
-    seat_to_id: &HashMap<u8, &str>,
-    map: &mut HashMap<&str, PlayerStats>,
+    seat_to_name: &HashMap<u8, String>,
+    map: &mut HashMap<String, PlayerStats>,
 ) {
     if hand.bomb_pot {
         return;
@@ -175,8 +180,8 @@ fn process_preflop(
         }
 
         let seat = a.seat;
-        let id = match seat_to_id.get(&seat) {
-            Some(id) => *id,
+        let name = match seat_to_name.get(&seat) {
+            Some(n) => n.as_str(),
             None => continue,
         };
 
@@ -188,7 +193,7 @@ fn process_preflop(
                 if raise_count == 2
                     && three_bettor.is_some()
                     && Some(seat) == open_raiser
-                    && let Some(stats) = map.get_mut(id)
+                    && let Some(stats) = map.get_mut(name)
                 {
                     stats.fold_to_three_bet_opp += 1;
                     stats.fold_to_three_bets += 1;
@@ -198,14 +203,14 @@ fn process_preflop(
             ActionType::Call => {
                 vpip_seats.insert(seat);
                 if raise_count == 0 {
-                    if let Some(stats) = map.get_mut(id) {
+                    if let Some(stats) = map.get_mut(name) {
                         stats.limps += 1;
                     }
                 } else if raise_count >= 1 && !has_voluntarily_acted.contains(&seat) {
                     let is_bb = seat_to_pos.get(&seat) == Some(&Position::BB);
                     if raise_count == 1
                         && !is_bb
-                        && let Some(stats) = map.get_mut(id)
+                        && let Some(stats) = map.get_mut(name)
                     {
                         stats.cold_call_opp += 1;
                         stats.cold_calls += 1;
@@ -220,7 +225,7 @@ fn process_preflop(
                 if raise_count == 2
                     && three_bettor.is_some()
                     && Some(seat) == open_raiser
-                    && let Some(stats) = map.get_mut(id)
+                    && let Some(stats) = map.get_mut(name)
                 {
                     stats.fold_to_three_bet_opp += 1;
                 }
@@ -234,7 +239,7 @@ fn process_preflop(
 
                 if raise_count == 1 {
                     open_raiser = Some(seat);
-                    if let Some(stats) = map.get_mut(id) {
+                    if let Some(stats) = map.get_mut(name) {
                         stats.open_raises += 1;
                     }
                 } else if raise_count == 2 {
@@ -242,7 +247,7 @@ fn process_preflop(
                     if open_raiser != Some(seat) {
                         faced_open_raise.insert(seat);
                     }
-                    if let Some(stats) = map.get_mut(id) {
+                    if let Some(stats) = map.get_mut(name) {
                         stats.three_bets += 1;
                     }
                 }
@@ -252,7 +257,7 @@ fn process_preflop(
                 if raise_count == 3
                     && three_bettor.is_some()
                     && Some(seat) == open_raiser
-                    && let Some(stats) = map.get_mut(id)
+                    && let Some(stats) = map.get_mut(name)
                 {
                     stats.fold_to_three_bet_opp += 1;
                 }
@@ -260,7 +265,7 @@ fn process_preflop(
                 if raise_count == 2
                     && !has_voluntarily_acted.contains(&seat)
                     && seat_to_pos.get(&seat) != Some(&Position::BB)
-                    && let Some(stats) = map.get_mut(id)
+                    && let Some(stats) = map.get_mut(name)
                 {
                     stats.cold_call_opp += 1;
                 }
@@ -272,32 +277,23 @@ fn process_preflop(
     }
 
     for &seat in &faced_open_raise {
-        let id = match seat_to_id.get(&seat) {
-            Some(id) => *id,
-            None => continue,
-        };
-        if let Some(stats) = map.get_mut(id) {
+        let Some(name) = seat_to_name.get(&seat) else { continue };
+        if let Some(stats) = map.get_mut(name.as_str()) {
             stats.three_bet_opp += 1;
         }
     }
     if let Some(tb) = three_bettor
         && !faced_open_raise.contains(&tb)
     {
-        let id = match seat_to_id.get(&tb) {
-            Some(id) => *id,
-            None => return,
-        };
-        if let Some(stats) = map.get_mut(id) {
+        let Some(name) = seat_to_name.get(&tb) else { return };
+        if let Some(stats) = map.get_mut(name.as_str()) {
             stats.three_bet_opp += 1;
         }
     }
 
     for &seat in &vpip_seats {
-        let id = match seat_to_id.get(&seat) {
-            Some(id) => *id,
-            None => continue,
-        };
-        if let Some(stats) = map.get_mut(id) {
+        let Some(name) = seat_to_name.get(&seat) else { continue };
+        if let Some(stats) = map.get_mut(name.as_str()) {
             stats.vpip_hands += 1;
             if let Some(&pos) = seat_to_pos.get(&seat) {
                 stats.pos_vpip[pos_index(pos)] += 1;
@@ -305,11 +301,8 @@ fn process_preflop(
         }
     }
     for &seat in &pfr_seats {
-        let id = match seat_to_id.get(&seat) {
-            Some(id) => *id,
-            None => continue,
-        };
-        if let Some(stats) = map.get_mut(id) {
+        let Some(name) = seat_to_name.get(&seat) else { continue };
+        if let Some(stats) = map.get_mut(name.as_str()) {
             stats.pfr_hands += 1;
             if let Some(&pos) = seat_to_pos.get(&seat) {
                 stats.pos_pfr[pos_index(pos)] += 1;
@@ -320,8 +313,8 @@ fn process_preflop(
 
 fn process_postflop(
     hand: &Hand,
-    seat_to_id: &HashMap<u8, &str>,
-    map: &mut HashMap<&str, PlayerStats>,
+    seat_to_name: &HashMap<u8, String>,
+    map: &mut HashMap<String, PlayerStats>,
 ) {
     let preflop = match hand.streets.first() {
         Some(sd) if sd.street == Street::Preflop => sd,
@@ -335,7 +328,8 @@ fn process_postflop(
     for p in &hand.players {
         if saw_street(hand, p.seat, Street::Flop)
             && hand.streets.iter().any(|sd| sd.street >= Street::Flop)
-            && let Some(stats) = map.get_mut(p.id.as_str())
+            && let Some(name) = seat_to_name.get(&p.seat)
+            && let Some(stats) = map.get_mut(name.as_str())
         {
             stats.saw_flop += 1;
             if winner_seats.contains(&p.seat) {
@@ -352,14 +346,14 @@ fn process_postflop(
         let mut first_bettor: Option<u8> = None;
 
         for a in &sd.actions {
-            let id = match seat_to_id.get(&a.seat) {
-                Some(id) => *id,
+            let name = match seat_to_name.get(&a.seat) {
+                Some(n) => n.as_str(),
                 None => continue,
             };
 
             match a.kind {
                 ActionType::Bet => {
-                    if let Some(stats) = map.get_mut(id) {
+                    if let Some(stats) = map.get_mut(name) {
                         stats.postflop_bets += 1;
                     }
                     if first_bettor.is_none() {
@@ -367,14 +361,14 @@ fn process_postflop(
 
                         if sd.street == Street::Flop
                             && Some(a.seat) == pf_aggressor
-                            && let Some(stats) = map.get_mut(id)
+                            && let Some(stats) = map.get_mut(name)
                         {
                             stats.cbets += 1;
                         }
                     }
                 }
                 ActionType::Call => {
-                    if let Some(stats) = map.get_mut(id) {
+                    if let Some(stats) = map.get_mut(name) {
                         stats.postflop_calls += 1;
                     }
                 }
@@ -382,7 +376,7 @@ fn process_postflop(
                     if sd.street == Street::Flop
                         && first_bettor.is_some()
                         && first_bettor == pf_aggressor
-                        && let Some(stats) = map.get_mut(id)
+                        && let Some(stats) = map.get_mut(name)
                     {
                         stats.fold_to_cbet_opp += 1;
                         stats.fold_to_cbets += 1;
@@ -395,8 +389,8 @@ fn process_postflop(
         if sd.street == Street::Flop {
             if let Some(agg) = pf_aggressor
                 && saw_street(hand, agg, Street::Flop)
-                && let Some(id) = seat_to_id.get(&agg)
-                && let Some(stats) = map.get_mut(*id)
+                && let Some(name) = seat_to_name.get(&agg)
+                && let Some(stats) = map.get_mut(name.as_str())
             {
                 stats.cbet_opp += 1;
             }
@@ -410,8 +404,8 @@ fn process_postflop(
                     }
                     match a.kind {
                         ActionType::Call | ActionType::Bet => {
-                            if let Some(id) = seat_to_id.get(&a.seat)
-                                && let Some(stats) = map.get_mut(*id)
+                            if let Some(name) = seat_to_name.get(&a.seat)
+                                && let Some(stats) = map.get_mut(name.as_str())
                             {
                                 stats.fold_to_cbet_opp += 1;
                             }
@@ -426,8 +420,8 @@ fn process_postflop(
 
 fn process_showdown(
     hand: &Hand,
-    _seat_to_id: &HashMap<u8, &str>,
-    map: &mut HashMap<&str, PlayerStats>,
+    seat_to_name: &HashMap<u8, String>,
+    map: &mut HashMap<String, PlayerStats>,
 ) {
     if !hand.real_showdown {
         return;
@@ -443,7 +437,8 @@ fn process_showdown(
             continue;
         }
         if went_to_showdown(hand, p.seat)
-            && let Some(stats) = map.get_mut(p.id.as_str())
+            && let Some(name) = seat_to_name.get(&p.seat)
+            && let Some(stats) = map.get_mut(name.as_str())
         {
             stats.went_to_showdown += 1;
             if winner_seats.contains(&p.seat) {
@@ -455,8 +450,8 @@ fn process_showdown(
 
 fn process_all_in_ev(
     hand: &Hand,
-    seat_to_id: &HashMap<u8, &str>,
-    map: &mut HashMap<&str, PlayerStats>,
+    seat_to_name: &HashMap<u8, String>,
+    map: &mut HashMap<String, PlayerStats>,
 ) {
     if !hand.real_showdown || hand.effective_bb <= 0.0 {
         return;
@@ -570,8 +565,8 @@ fn process_all_in_ev(
         let ev_diff_chips = ev_expected[i] - actual_from_pot;
         let ev_diff = ev_diff_chips / hand.effective_bb;
 
-        if let Some(id) = seat_to_id.get(&seat)
-            && let Some(stats) = map.get_mut(*id)
+        if let Some(name) = seat_to_name.get(&seat)
+            && let Some(stats) = map.get_mut(name.as_str())
         {
             stats.all_in_ev_diff += ev_diff;
             stats.all_in_ev_diff_chips += ev_diff_chips;
@@ -902,9 +897,9 @@ mod tests {
     use super::*;
     use crate::parser::test_helpers::*;
 
-    fn stats_for(data: &crate::parser::GameData, id: &str) -> PlayerStats {
+    fn stats_for(data: &crate::parser::GameData, name: &str) -> PlayerStats {
         let result = compute_stats(data);
-        result.players.into_iter().find(|s| s.player_id == id).unwrap()
+        result.players.into_iter().find(|s| s.name == name).unwrap()
     }
 
     // --- VPIP / PFR ---
@@ -940,16 +935,16 @@ mod tests {
 
         let data = parse_multi_game_data(&[&h1, &h2]);
 
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(s1.hands_played, 2);
         assert_eq!(s1.vpip_hands, 1); // raised in hand 1
         assert_eq!(s1.pfr_hands, 1);
 
-        let s2 = stats_for(&data, "p2");
+        let s2 = stats_for(&data, "Bob");
         assert_eq!(s2.vpip_hands, 1); // called in hand 1
         assert_eq!(s2.pfr_hands, 0); // never raised
 
-        let s3 = stats_for(&data, "p3");
+        let s3 = stats_for(&data, "Charlie");
         assert_eq!(s3.vpip_hands, 0); // folded both hands
     }
 
@@ -968,7 +963,7 @@ mod tests {
             .win(3, 2.5);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(s1.vpip_hands, 0);
     }
 
@@ -991,11 +986,11 @@ mod tests {
             .win(2, 13.0);
 
         let data = parse_game_data(&b);
-        let s2 = stats_for(&data, "p2");
+        let s2 = stats_for(&data, "Bob");
         assert_eq!(s2.three_bets, 1);
         assert!(s2.three_bet_opp >= 1);
 
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(s1.fold_to_three_bets, 1);
         assert_eq!(s1.fold_to_three_bet_opp, 1);
     }
@@ -1019,7 +1014,7 @@ mod tests {
             .win(1, 36.0);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(
             s1.fold_to_three_bet_opp, 1,
             "open raiser faced the 3-bet (4-bet counts as an opportunity)"
@@ -1047,7 +1042,7 @@ mod tests {
             .win(1, 19.0);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(s1.fold_to_three_bet_opp, 1);
         assert_eq!(s1.fold_to_three_bets, 0);
     }
@@ -1070,7 +1065,7 @@ mod tests {
             .win(3, 12.5);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(s1.fold_to_three_bet_opp, 1, "opener faced 3-bet");
         assert_eq!(s1.fold_to_three_bets, 1, "opener folded to 3-bet");
         assert_eq!(s1.pfr_hands, 1, "opener raised preflop");
@@ -1094,7 +1089,7 @@ mod tests {
             .win(3, 12.5);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(s1.fold_to_three_bet_opp, 1);
         assert_eq!(s1.fold_to_three_bets, 1);
     }
@@ -1119,11 +1114,11 @@ mod tests {
             .win(3, 13.5);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(s1.fold_to_three_bet_opp, 0, "limper should not get fold-to-3B opp");
         assert_eq!(s1.fold_to_three_bets, 0);
 
-        let s4 = stats_for(&data, "p4");
+        let s4 = stats_for(&data, "Dave");
         assert_eq!(s4.fold_to_three_bet_opp, 1, "open raiser gets the opp");
         assert_eq!(s4.fold_to_three_bets, 1, "open raiser folded");
     }
@@ -1148,10 +1143,10 @@ mod tests {
             .win(4, 18.5);
 
         let data = parse_game_data(&b);
-        let s2 = stats_for(&data, "p2");
+        let s2 = stats_for(&data, "Bob");
         assert_eq!(s2.fold_to_three_bet_opp, 0, "cold-caller has no fold-to-3B opp");
 
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(s1.fold_to_three_bet_opp, 1);
         assert_eq!(s1.fold_to_three_bets, 1);
     }
@@ -1175,7 +1170,7 @@ mod tests {
             .win(1, 10.0);
 
         let data = parse_game_data(&b);
-        let s3 = stats_for(&data, "p3");
+        let s3 = stats_for(&data, "Charlie");
         assert_eq!(s3.fold_to_cbet_opp, 1, "BB faced c-bet");
         assert_eq!(s3.fold_to_cbets, 1, "BB folded to c-bet");
     }
@@ -1201,11 +1196,11 @@ mod tests {
             .win(1, 6.5);
 
         let data = parse_game_data(&b);
-        let s4 = stats_for(&data, "p4");
+        let s4 = stats_for(&data, "Dave");
         assert_eq!(s4.three_bet_opp, 1, "folding to open = had 3-bet opportunity");
         assert_eq!(s4.three_bets, 0);
 
-        let s2 = stats_for(&data, "p2");
+        let s2 = stats_for(&data, "Bob");
         assert_eq!(s2.three_bet_opp, 1, "SB folding to open = had 3-bet opportunity");
     }
 
@@ -1230,11 +1225,11 @@ mod tests {
             .win(1, 10.0);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(s1.cbets, 1);
         assert_eq!(s1.cbet_opp, 1);
 
-        let s2 = stats_for(&data, "p2");
+        let s2 = stats_for(&data, "Bob");
         assert_eq!(s2.fold_to_cbets, 1);
         assert_eq!(s2.fold_to_cbet_opp, 1);
     }
@@ -1260,12 +1255,12 @@ mod tests {
             .win(1, 14.0);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(s1.postflop_bets, 2);
         assert_eq!(s1.postflop_calls, 0);
         // AF = 2/0 = inf
 
-        let s2 = stats_for(&data, "p2");
+        let s2 = stats_for(&data, "Bob");
         assert_eq!(s2.postflop_bets, 0);
         assert_eq!(s2.postflop_calls, 2);
     }
@@ -1297,12 +1292,12 @@ mod tests {
             .win(1, 2.0);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(s1.saw_flop, 1);
         assert_eq!(s1.went_to_showdown, 1);
         assert_eq!(s1.won_at_showdown, 1);
 
-        let s2 = stats_for(&data, "p2");
+        let s2 = stats_for(&data, "Bob");
         assert_eq!(s2.saw_flop, 1);
         assert_eq!(s2.went_to_showdown, 1);
         assert_eq!(s2.won_at_showdown, 0);
@@ -1326,15 +1321,15 @@ mod tests {
             .win(1, 11.0);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(s1.saw_flop, 1);
         assert_eq!(s1.won_when_saw_flop, 1);
 
-        let s2 = stats_for(&data, "p2");
+        let s2 = stats_for(&data, "Bob");
         assert_eq!(s2.saw_flop, 1);
         assert_eq!(s2.won_when_saw_flop, 0);
 
-        let s3 = stats_for(&data, "p3");
+        let s3 = stats_for(&data, "Charlie");
         assert_eq!(s3.saw_flop, 0);
         assert_eq!(s3.won_when_saw_flop, 0);
     }
@@ -1356,7 +1351,7 @@ mod tests {
             .win(1, 4.5);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         // BTN = index 3
         assert_eq!(s1.pos_vpip[3], 1);
         assert_eq!(s1.pos_pfr[3], 1);
@@ -1381,11 +1376,11 @@ mod tests {
             .win(1, 2.0);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         // won 2.0 - invested 1.0 = net +1.0, in BB = +1.0
         assert!((s1.net_bb - 1.0).abs() < 0.001);
 
-        let s2 = stats_for(&data, "p2");
+        let s2 = stats_for(&data, "Bob");
         assert!((s2.net_bb - (-1.0)).abs() < 0.001);
     }
 
@@ -1406,7 +1401,7 @@ mod tests {
             .win(3, 3.0);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(s1.limps, 1);
     }
 
@@ -1427,7 +1422,7 @@ mod tests {
             .win(1, 4.5);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(s1.open_raises, 1);
     }
 
@@ -1460,8 +1455,8 @@ mod tests {
     fn all_in_ev_both_all_in_equal_stacks() {
         let b = preflop_allin_hand(1.0, 100.0, true);
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
-        let s2 = stats_for(&data, "p2");
+        let s1 = stats_for(&data, "Alice");
+        let s2 = stats_for(&data, "Bob");
 
         assert_eq!(s1.all_in_hands, 1);
         assert_eq!(s2.all_in_hands, 1);
@@ -1493,8 +1488,8 @@ mod tests {
             .win(1, 200.0);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
-        let s2 = stats_for(&data, "p2");
+        let s1 = stats_for(&data, "Alice");
+        let s2 = stats_for(&data, "Bob");
 
         // Primary bug: covering player must be tracked even without all_in=true.
         assert_eq!(s1.all_in_hands, 1, "covering player must be tracked");
@@ -1536,7 +1531,7 @@ mod tests {
             .win(2, 20.0);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
+        let s1 = stats_for(&data, "Alice");
         assert_eq!(s1.all_in_hands, 0, "EV must not be tracked when action continues");
     }
 
@@ -1565,8 +1560,8 @@ mod tests {
             .win(1, 200.0);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
-        let s2 = stats_for(&data, "p2");
+        let s1 = stats_for(&data, "Alice");
+        let s2 = stats_for(&data, "Bob");
 
         assert_eq!(s1.all_in_hands, 1);
         assert_eq!(s2.all_in_hands, 1);
@@ -1582,8 +1577,8 @@ mod tests {
         let b1 = preflop_allin_hand(1.0, 100.0, true);
         let b2 = preflop_allin_hand(2.0, 200.0, true);
 
-        let s1 = stats_for(&parse_game_data(&b1), "p1");
-        let s2 = stats_for(&parse_game_data(&b2), "p1");
+        let s1 = stats_for(&parse_game_data(&b1), "Alice");
+        let s2 = stats_for(&parse_game_data(&b2), "Alice");
 
         assert!(
             (s1.all_in_ev_diff - s2.all_in_ev_diff).abs() < 0.01,
@@ -1623,9 +1618,9 @@ mod tests {
             .win(2, 300.0);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
-        let s2 = stats_for(&data, "p2");
-        let s3 = stats_for(&data, "p3");
+        let s1 = stats_for(&data, "Alice");
+        let s2 = stats_for(&data, "Bob");
+        let s3 = stats_for(&data, "Carol");
 
         assert_eq!(s1.all_in_hands, 1);
         assert_eq!(s2.all_in_hands, 1);
@@ -1679,8 +1674,8 @@ mod tests {
             .win(1, 210.0);
 
         let data = parse_game_data(&b);
-        let s1 = stats_for(&data, "p1");
-        let s2 = stats_for(&data, "p2");
+        let s1 = stats_for(&data, "Alice");
+        let s2 = stats_for(&data, "Bob");
 
         assert_eq!(s1.all_in_hands, 1);
         assert_eq!(s2.all_in_hands, 1);
@@ -1775,13 +1770,95 @@ mod tests {
 
         assert_eq!(result.total_hands, 3);
 
-        let alice = result.players.iter().find(|s| s.player_id == "p1").unwrap();
+        let alice = result.players.iter().find(|s| s.name == "Alice").unwrap();
         assert_eq!(alice.hands_at_table, 2); // dealt into hands 1,2
-        let bob = result.players.iter().find(|s| s.player_id == "p2").unwrap();
+        let bob = result.players.iter().find(|s| s.name == "Bob").unwrap();
         assert_eq!(bob.hands_at_table, 3); // dealt into all 3
-        let charlie = result.players.iter().find(|s| s.player_id == "p3").unwrap();
+        let charlie = result.players.iter().find(|s| s.name == "Charlie").unwrap();
         assert_eq!(charlie.hands_at_table, 1); // dealt into hand 1 only
-        let dave = result.players.iter().find(|s| s.player_id == "p4").unwrap();
+        let dave = result.players.iter().find(|s| s.name == "Dave").unwrap();
         assert_eq!(dave.hands_at_table, 1); // dealt into hand 3 only
+    }
+
+    #[test]
+    fn same_name_different_ids_merged() {
+        let h1 = HandBuilder::new()
+            .number(1)
+            .player("id_v1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(3, 1.0)
+            .bet(1, 3.0)
+            .call(2, 3.0)
+            .fold(3)
+            .win(1, 6.5);
+
+        let h2 = HandBuilder::new()
+            .number(2)
+            .player("id_v2", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .player("p3", 3, "Charlie", 100.0)
+            .dealer(2)
+            .sb(3, 0.5)
+            .bb(1, 1.0)
+            .bet(2, 3.0)
+            .call(1, 3.0)
+            .fold(3)
+            .win(2, 6.5);
+
+        let data = parse_multi_game_data(&[&h1, &h2]);
+        let result = compute_stats(&data);
+
+        let alice_count = result.players.iter().filter(|s| s.name == "Alice").count();
+        assert_eq!(alice_count, 1, "same name with different IDs must merge");
+
+        let alice = result.players.iter().find(|s| s.name == "Alice").unwrap();
+        assert_eq!(alice.hands_at_table, 2);
+        assert_eq!(alice.vpip_hands, 2);
+    }
+
+    #[test]
+    fn same_name_different_ids_net_merges() {
+        let h1 = HandBuilder::new()
+            .number(1)
+            .player("session1_id", 1, "Pranav", 200.0)
+            .player("p2", 2, "Bob", 200.0)
+            .dealer(1)
+            .sb(2, 0.5)
+            .bb(1, 1.0)
+            .bet(2, 3.0)
+            .fold(1)
+            .win(2, 4.0);
+
+        let h2 = HandBuilder::new()
+            .number(2)
+            .player("session2_id", 1, "Pranav", 200.0)
+            .player("p2", 2, "Bob", 200.0)
+            .dealer(2)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .bet(1, 3.0)
+            .fold(2)
+            .win(1, 4.0);
+
+        let data = parse_multi_game_data(&[&h1, &h2]);
+        let result = compute_stats(&data);
+
+        let pranav_entries: Vec<_> = result.players.iter().filter(|s| s.name == "Pranav").collect();
+        assert_eq!(pranav_entries.len(), 1);
+
+        let pranav = &pranav_entries[0];
+        assert_eq!(pranav.hands_played, 2);
+        // h1: BB=1.0, bet(3.0) by Bob → fold → invested max(1.0)=1.0, won 0 → net -1.0
+        // h2: SB=0.5, bet(3.0) → Bob folds → invested max(0.5,3.0)=3.0, won 4.0 → net +1.0
+        let expected_net = -1.0 + 1.0;
+        assert!(
+            (pranav.net_chips - expected_net).abs() < 0.01,
+            "net_chips={}, expected={}",
+            pranav.net_chips,
+            expected_net,
+        );
     }
 }

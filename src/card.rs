@@ -560,7 +560,13 @@ fn detect_straight_draw(hole: &[Card], all: &[Card], board: &[Card]) -> Option<S
 
         let missing = (low..=high).find(|&r| !present[r as usize]).unwrap();
         if missing == low || missing == high {
-            oesd = true;
+            // Wheel (A-2-3-4-5) and broadway (T-J-Q-K-A) edges:
+            // only one rank completes the straight, so it's a gutshot.
+            if (low == 1 && missing == high) || (low == 10 && missing == low) {
+                gutshot = true;
+            } else {
+                oesd = true;
+            }
         } else {
             gutshot = true;
         }
@@ -1013,6 +1019,35 @@ mod tests {
         let board = cards(&["5c", "4h", "2s"]);
         let desc = holding_description(&hole, &board);
         assert!(desc.contains("gutshot straight draw"), "expected gutshot, got: {desc}");
+    }
+
+    #[test]
+    fn wheel_draw_is_gutshot() {
+        // AA on Q-4-2-3 board: A-2-3-4 needs only a 5 → gutshot, not OESD
+        let hole = cards(&["As", "Ah"]);
+        let board = cards(&["Qc", "4d", "2h", "3c"]);
+        let desc = holding_description(&hole, &board);
+        assert!(desc.contains("gutshot"), "wheel draw should be gutshot, got: {desc}");
+        assert!(!desc.contains("open-ended"), "wheel draw should not be OESD, got: {desc}");
+    }
+
+    #[test]
+    fn broadway_draw_is_gutshot() {
+        // J-Q on K-A-3 board: J-Q-K-A needs only a T → gutshot, not OESD
+        let hole = cards(&["Js", "Qd"]);
+        let board = cards(&["Kc", "Ah", "3s"]);
+        let desc = holding_description(&hole, &board);
+        assert!(desc.contains("gutshot"), "broadway draw should be gutshot, got: {desc}");
+        assert!(!desc.contains("open-ended"), "broadway draw should not be OESD, got: {desc}");
+    }
+
+    #[test]
+    fn wheel_draw_with_low_cards_is_gutshot() {
+        // 3-4 on A-2-8: window A-2-3-4-5 missing 5 at edge → gutshot
+        let hole = cards(&["3s", "4d"]);
+        let board = cards(&["Ac", "2h", "8s"]);
+        let desc = holding_description(&hole, &board);
+        assert!(desc.contains("gutshot"), "expected gutshot, got: {desc}");
     }
 
     #[test]

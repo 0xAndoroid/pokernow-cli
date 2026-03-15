@@ -179,11 +179,17 @@ pub fn parse_files<S: std::hash::BuildHasher>(
     for raw_file in raw_files {
         for raw_hand in raw_file.hands {
             for rp in &raw_hand.players {
-                let canonical = id_unify.get(&rp.id).unwrap_or(&rp.id);
-                player_names.entry(canonical.clone()).or_insert_with(|| rp.name.clone());
+                let canonical_id = id_unify.get(&rp.id).unwrap_or(&rp.id);
+                let canonical_name = unify.get(&rp.name).unwrap_or(&rp.name);
+                player_names.entry(canonical_id.clone()).or_insert_with(|| canonical_name.clone());
             }
 
-            if let Some(hand) = process_hand(&raw_hand, &id_unify, blind_remap) {
+            if let Some(mut hand) = process_hand(&raw_hand, &id_unify, blind_remap) {
+                for p in &mut hand.players {
+                    if let Some(canonical) = unify.get(&p.name) {
+                        p.name = canonical.clone();
+                    }
+                }
                 all_hands.push(hand);
             }
         }

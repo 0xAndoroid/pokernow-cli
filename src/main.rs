@@ -9,6 +9,7 @@ use poker_cli::config::{BlindRemap, Config};
 use poker_cli::display;
 use poker_cli::parser::{self, GameData};
 use poker_cli::parser_log;
+use poker_cli::ranking::{self, RankingFilter};
 use poker_cli::search::{self, SearchFilter, SortField};
 use poker_cli::stats;
 use poker_cli::summary;
@@ -121,6 +122,20 @@ enum Command {
         #[command(flatten)]
         files: FileArgs,
     },
+    /// Show the strongest hands revealed across all sessions
+    BestHands {
+        #[command(flatten)]
+        files: FileArgs,
+        /// Number of top hands to display
+        #[arg(long, short = 'n', default_value_t = 10)]
+        top: usize,
+        /// Only include hands shown at showdown
+        #[arg(long)]
+        showdown_only: bool,
+        /// Filter to a specific player
+        #[arg(long)]
+        player: Option<String>,
+    },
     /// Generate a default config.toml with all options
     GenConfig,
 }
@@ -166,6 +181,7 @@ enum CliAction {
     Hand(String),
     Search(SearchFilter),
     Summary,
+    BestHands(RankingFilter),
 }
 
 fn parse_blind_remap_arg(s: &str) -> Vec<BlindRemap> {
@@ -379,6 +395,19 @@ fn main() {
             (files.files, CliAction::Search(filter))
         }
         Command::Summary { files } => (files.files, CliAction::Summary),
+        Command::BestHands {
+            files,
+            top,
+            showdown_only,
+            player,
+        } => (
+            files.files,
+            CliAction::BestHands(RankingFilter {
+                top,
+                showdown_only,
+                player,
+            }),
+        ),
     };
 
     let resolved =
@@ -458,6 +487,10 @@ fn main() {
         }
         CliAction::Summary => {
             summary::print_summary(&data, use_chips);
+        }
+        CliAction::BestHands(filter) => {
+            let results = ranking::rank_hands(&data, &filter);
+            ranking::print_ranking(&results, use_chips);
         }
     }
 }

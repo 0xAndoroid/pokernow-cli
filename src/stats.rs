@@ -40,23 +40,25 @@ pub struct PlayerStats {
     pub net_bb: f64,
     pub net_chips: f64,
 
-    pub pos_vpip: [u32; 6],
-    pub pos_pfr: [u32; 6],
-    pub pos_hands: [u32; 6],
+    pub pos_vpip: [u32; 5],
+    pub pos_pfr: [u32; 5],
+    pub pos_hands: [u32; 5],
 
     pub all_in_ev_diff: f64,
     pub all_in_ev_diff_chips: f64,
     pub all_in_hands: u32,
 }
 
-fn pos_index(pos: Position) -> usize {
+fn pos_index(pos: Position, is_straddle: bool) -> usize {
+    if is_straddle {
+        return 4; // Blinds
+    }
     match pos {
         Position::EP => 0,
         Position::MP => 1,
         Position::CO => 2,
         Position::BTN => 3,
-        Position::SB => 4,
-        Position::BB => 5,
+        Position::SB | Position::BB => 4, // Blinds
     }
 }
 
@@ -128,8 +130,8 @@ pub fn compute_stats(data: &GameData) -> StatsResult {
 
             if !hand.bomb_pot {
                 stats.hands_played += 1;
-                let idx = pos_index(p.position);
-                stats.pos_hands[idx] += 1;
+                let is_str = hand.straddle_seat == Some(p.seat);
+                stats.pos_hands[pos_index(p.position, is_str)] += 1;
             }
         }
 
@@ -296,7 +298,8 @@ fn process_preflop(
         if let Some(stats) = map.get_mut(name.as_str()) {
             stats.vpip_hands += 1;
             if let Some(&pos) = seat_to_pos.get(&seat) {
-                stats.pos_vpip[pos_index(pos)] += 1;
+                let is_str = hand.straddle_seat == Some(seat);
+                stats.pos_vpip[pos_index(pos, is_str)] += 1;
             }
         }
     }
@@ -305,7 +308,8 @@ fn process_preflop(
         if let Some(stats) = map.get_mut(name.as_str()) {
             stats.pfr_hands += 1;
             if let Some(&pos) = seat_to_pos.get(&seat) {
-                stats.pos_pfr[pos_index(pos)] += 1;
+                let is_str = hand.straddle_seat == Some(seat);
+                stats.pos_pfr[pos_index(pos, is_str)] += 1;
             }
         }
     }
@@ -860,7 +864,7 @@ fn print_player_stats(s: &PlayerStats, rank: Option<usize>, total_hands: usize, 
     println!();
 
     println!("   Position VPIP/PFR:");
-    let labels = ["EP", "MP", "CO", "BTN", "SB", "BB"];
+    let labels = ["EP", "MP", "CO", "BTN", "Blinds"];
     let mut pos_line = String::from("     ");
     for (i, label) in labels.iter().enumerate() {
         let vpip = fmt_pct(s.pos_vpip[i], s.pos_hands[i]);
@@ -868,7 +872,7 @@ fn print_player_stats(s: &PlayerStats, rank: Option<usize>, total_hands: usize, 
         if i > 0 {
             pos_line.push_str("  ");
         }
-        let _ = write!(pos_line, "{label:<3} {vpip}/{pfr}");
+        let _ = write!(pos_line, "{label:<6} {vpip}/{pfr}");
     }
     println!("{pos_line}");
     println!();

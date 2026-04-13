@@ -12,7 +12,7 @@ Install from source:
 
 ```bash
 git clone https://github.com/0xAndoroid/pokernow-cli.git
-cd poker-cli
+cd pokernow-cli
 cargo install --path ./
 ```
 

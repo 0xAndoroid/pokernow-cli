@@ -1,13 +1,13 @@
 ---
-description: 'Analyze PokerNow hand histories using poker-cli. USE FOR: - Computing player stats (VPIP, PFR, 3-bet, C-bet, AF, WTSD, WWSF) - Replaying specific hands with made-hand descriptions - Searching/filtering hands by player, pot size, showdown, won/lost - Comparing player performance across sessions - Session summaries TRIGGERS: - "poker stats", "hand history", "analyze session" - "show hand", "replay hand", "what happened in hand" - "search hands", "big pots", "showdown hands" - "player stats", "VPIP", "how did X play" - "session summary", "biggest pot", "who won"'
+description: 'Analyze PokerNow hand histories using pokernow. USE FOR: - Computing player stats (VPIP, PFR, 3-bet, C-bet, AF, WTSD, WWSF) - Replaying specific hands with made-hand descriptions - Searching/filtering hands by player, pot size, showdown, won/lost - Comparing player performance across sessions - Session summaries TRIGGERS: - "poker stats", "hand history", "analyze session" - "show hand", "replay hand", "what happened in hand" - "search hands", "big pots", "showdown hands" - "player stats", "VPIP", "how did X play" - "session summary", "biggest pot", "who won"'
 allowed-tools:
-  - Bash(./target/release/poker-cli:*)
+  - Bash(./target/release/pokernow:*)
   - Bash(cargo build:*)
 ---
 
 ## Context
 
-- **Command:** `poker-cli` (assumed installed and on PATH)
+- **Command:** `pokernow` (assumed installed and on PATH)
 - **Source:** `~/dev/poker-cli`
 - **Hand files:** `~/dev/pokernow/hands/YYYY-MM-DD.json`
 - **Tests:** 251 tests, ~92% line coverage. `cargo test` / `cargo llvm-cov`
@@ -17,10 +17,10 @@ allowed-tools:
 ### stats — Player Statistics
 
 ```bash
-poker-cli stats [files...]
-poker-cli stats                              # uses config.toml files
-poker-cli stats session1.json session2.json  # explicit files
-poker-cli stats --player Andrew session.json # single-player compact view
+pokernow stats [files...]
+pokernow stats                              # uses config.toml files
+pokernow stats session1.json session2.json  # explicit files
+pokernow stats --player Andrew session.json # single-player compact view
 ```
 
 Per-player output ranked by P&L: VPIP, PFR, 3-Bet%, Fold-to-3B%, Cold Call%, C-Bet%, Fold-to-CB%, AF, WTSD%, W$SD%, WWSF%, All-in EV, positional breakdowns (EP/MP/CO/BTN/SB/BB), net P&L in BB, BB/hand. Multi-file merges stats across sessions. `--player` flag shows a single player.
@@ -28,9 +28,9 @@ Per-player output ranked by P&L: VPIP, PFR, 3-Bet%, Fold-to-3B%, Cold Call%, C-B
 ### hand — Hand Replay
 
 ```bash
-poker-cli hand <id> [files...]
-poker-cli hand 245 session.json              # by hand number (matches search output)
-poker-cli hand geyaotgpt14p session.json     # by PokerNow hash ID
+pokernow hand <id> [files...]
+pokernow hand 245 session.json              # by hand number (matches search output)
+pokernow hand geyaotgpt14p session.json     # by PokerNow hash ID
 ```
 
 Street-by-street replay with:
@@ -47,10 +47,10 @@ Hand number matches the `Hand #` column in search output. Hash ID always works a
 ### search — Hand Search/Filter
 
 ```bash
-poker-cli search [filters...] [files...]
-poker-cli search --player Andrew --min-pot 100 --showdown session.json
-poker-cli search --player Andrew --lost --sort pot session.json
-poker-cli search --saw-flop Andrew --sort pot session.json
+pokernow search [filters...] [files...]
+pokernow search --player Andrew --min-pot 100 --showdown session.json
+pokernow search --player Andrew --lost --sort pot session.json
+pokernow search --saw-flop Andrew --sort pot session.json
 ```
 
 **Filters:**
@@ -71,8 +71,8 @@ Output: hand number, PokerNow hash ID, pot size (BB), showdown status, winner, a
 ### summary — Session Summary
 
 ```bash
-poker-cli summary [files...]
-poker-cli summary session.json
+pokernow summary [files...]
+pokernow summary session.json
 ```
 
 Compact one-screen overview: hand count, stakes, player count, biggest pot, and a P&L table with VPIP/PFR/BB-per-hand for all players ranked by profit. Also shows biggest winner and biggest loser.
@@ -80,7 +80,7 @@ Compact one-screen overview: hand count, stakes, player count, biggest pot, and 
 ### gen-config — Generate Config Template
 
 ```bash
-poker-cli gen-config
+pokernow gen-config
 ```
 
 Generates a fully-commented default `config.toml` with all available options. Errors if `config.toml` already exists in the current directory.
@@ -88,11 +88,11 @@ Generates a fully-commented default `config.toml` with all available options. Er
 ### Global Flags
 
 ```bash
-poker-cli --unify-players "pranav,pranavv;Steve,steveooooo" stats session.json
-poker-cli --no-config stats session.json
-poker-cli --chips stats session.json
-poker-cli --format hu,short,full stats session.json
-poker-cli --blind-remap "0.5/1:1/1,2/1:1/2" stats session.json
+pokernow --unify-players "pranav,pranavv;Steve,steveooooo" stats session.json
+pokernow --no-config stats session.json
+pokernow --chips stats session.json
+pokernow --format hu,short,full stats session.json
+pokernow --blind-remap "0.5/1:1/1,2/1:1/2" stats session.json
 ```
 
 - `--unify-players <groups>` — merge player identities. First name = canonical. Semicolons separate groups. Overrides config.toml `[unify]`.
@@ -103,7 +103,7 @@ poker-cli --blind-remap "0.5/1:1/1,2/1:1/2" stats session.json
 
 ## Config File
 
-Create `config.toml` in the directory where you run `poker-cli`. Eliminates repetitive CLI args.
+Create `config.toml` in the directory where you run `pokernow`. Eliminates repetitive CLI args.
 
 ```toml
 # Default hand history files (supports ~ expansion)

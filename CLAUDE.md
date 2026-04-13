@@ -1,4 +1,4 @@
-# poker-cli
+# pokernow
 
 PokerNow hand history analyzer. Rust CLI that parses JSON exports from [pokernow.club](https://www.pokernow.club/).
 

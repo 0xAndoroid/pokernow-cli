@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use poker_cli::parser;
-use poker_cli::search::{self, SearchFilter, SortField};
-use poker_cli::stats;
+use pokernow::parser;
+use pokernow::search::{self, SearchFilter, SortField};
+use pokernow::stats;
 
 fn fixture_path(filename: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(filename)
@@ -182,7 +182,7 @@ fn player_unification_merges_ids() {
 
 #[test]
 fn display_hand_from_real_data() {
-    use poker_cli::display;
+    use pokernow::display;
 
     let data = load_fixture("sample.json");
     if let Some(hand) = data.hands.first() {

@@ -1,5 +1,5 @@
 [package]
-name = "poker-cli"
+name = "pokernow"
 version = "0.1.0"
 edition = "2024"
 

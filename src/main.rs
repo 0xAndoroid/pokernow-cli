@@ -4,15 +4,15 @@ use std::process;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-use poker_cli::TableSize;
-use poker_cli::config::{BlindRemap, Config};
-use poker_cli::display;
-use poker_cli::parser::{self, GameData};
-use poker_cli::parser_log;
-use poker_cli::ranking::{self, RankingFilter};
-use poker_cli::search::{self, SearchFilter, SortField};
-use poker_cli::stats;
-use poker_cli::summary;
+use pokernow::TableSize;
+use pokernow::config::{BlindRemap, Config};
+use pokernow::display;
+use pokernow::parser::{self, GameData};
+use pokernow::parser_log;
+use pokernow::ranking::{self, RankingFilter};
+use pokernow::search::{self, SearchFilter, SortField};
+use pokernow::stats;
+use pokernow::summary;
 
 #[derive(Clone, Copy, ValueEnum)]
 enum LogFormat {
@@ -22,7 +22,7 @@ enum LogFormat {
 
 #[derive(Parser)]
 #[command(
-    name = "poker-cli",
+    name = "pokernow",
     about = "PokerNow hand history analyzer",
     after_help = "Config: place a config.toml in the working directory to set default files and \
                   player unification rules. Use --no-config to disable."
@@ -423,7 +423,7 @@ fn main() {
     if files.is_empty() {
         eprintln!("Error: no hand history files specified.\n");
         eprintln!("Provide files as arguments:");
-        eprintln!("  poker-cli stats game1.json game2.json\n");
+        eprintln!("  pokernow stats game1.json game2.json\n");
         eprintln!("Or create a config.toml in the current directory:");
         eprintln!("  files = [\"~/dev/pokernow/hands/session.json\"]");
         process::exit(1);

@@ -1,4 +1,4 @@
-# poker-cli
+# pokernow
 
 Fast CLI for analyzing [PokerNow](https://www.pokernow.club/) hand history JSON exports. Computes HUD-style stats, replays individual hands with made-hand descriptions, and searches/filters hands by criteria.
 
@@ -29,8 +29,8 @@ cargo install --path ./
 Compute per-player HUD statistics ranked by P&L:
 
 ```
-poker-cli stats session1.json session2.json
-poker-cli stats --player Andrew session.json    # single-player compact view
+pokernow stats session1.json session2.json
+pokernow stats --player Andrew session.json    # single-player compact view
 ```
 
 Output includes VPIP, PFR, 3-Bet%, Fold-to-3B, C-Bet%, Fold-to-CB%, AF, WTSD, W$SD, WWSF, positional breakdowns, and all-in EV diff. The `--player` flag shows stats for one player only.
@@ -40,9 +40,9 @@ Output includes VPIP, PFR, 3-Bet%, Fold-to-3B, C-Bet%, Fold-to-CB%, AF, WTSD, W$
 Display a single hand with board, actions, and made-hand descriptions:
 
 ```
-poker-cli hand <hand-id> session.json
-poker-cli hand 245 session.json                # by hand number (from search output)
-poker-cli hand geyaotgpt14p session.json       # by PokerNow hash ID
+pokernow hand <hand-id> session.json
+pokernow hand 245 session.json                # by hand number (from search output)
+pokernow hand geyaotgpt14p session.json       # by PokerNow hash ID
 ```
 
 Accepts either a PokerNow hash ID or a hand number (matching the `Hand #` column in search output). The header shows hand number, hash ID, stakes, player count, and effective stack in BB. The replay ends with per-player net P&L.
@@ -52,9 +52,9 @@ Accepts either a PokerNow hash ID or a hand number (matching the `Hand #` column
 Filter hands by player involvement, pot size, showdown, and P&L:
 
 ```
-poker-cli search --player Andrew --min-pot 100 --showdown session.json
-poker-cli search --player Andrew --lost --sort pot session.json
-poker-cli search --saw-flop Andrew --sort pot session.json
+pokernow search --player Andrew --min-pot 100 --showdown session.json
+pokernow search --player Andrew --lost --sort pot session.json
+pokernow search --saw-flop Andrew --sort pot session.json
 ```
 
 Flags:
@@ -73,7 +73,7 @@ Output includes hand number, PokerNow hash ID, pot size, showdown status, winner
 Compact one-screen session overview:
 
 ```
-poker-cli summary session.json
+pokernow summary session.json
 ```
 
 Shows hand count, stakes, player count, biggest pot, and a P&L table with VPIP/PFR/BB-per-hand for all players ranked by profit.
@@ -83,7 +83,7 @@ Shows hand count, stakes, player count, biggest pot, and a P&L table with VPIP/P
 Merge multiple PokerNow player identities into one:
 
 ```
-poker-cli --unify-players "Andrew,aryan;Steve,steveooooo" stats session.json
+pokernow --unify-players "Andrew,aryan;Steve,steveooooo" stats session.json
 ```
 
 The first name in each group becomes the canonical identity. Semicolons separate groups.
@@ -91,9 +91,9 @@ The first name in each group becomes the canonical identity. Semicolons separate
 ### Global flags
 
 ```
-poker-cli --chips stats session.json               # raw chip amounts instead of BB
-poker-cli --format hu,short,full stats session.json # include heads-up hands
-poker-cli --blind-remap "0.5/1:1/1,2/1:1/2" stats session.json
+pokernow --chips stats session.json               # raw chip amounts instead of BB
+pokernow --format hu,short,full stats session.json # include heads-up hands
+pokernow --blind-remap "0.5/1:1/1,2/1:1/2" stats session.json
 ```
 
 - `--chips` — display values in raw chip amounts instead of BB
@@ -103,14 +103,14 @@ poker-cli --blind-remap "0.5/1:1/1,2/1:1/2" stats session.json
 ### Generate config
 
 ```
-poker-cli gen-config
+pokernow gen-config
 ```
 
 Generates a fully-commented default `config.toml` with all options. Errors if `config.toml` already exists.
 
 ## Config file
 
-Create `config.toml` in the working directory to set defaults. Use `poker-cli gen-config` to generate a template.
+Create `config.toml` in the working directory to set defaults. Use `pokernow gen-config` to generate a template.
 
 ```toml
 # Default files when none given on CLI (supports ~ expansion)

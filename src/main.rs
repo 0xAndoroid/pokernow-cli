@@ -59,6 +59,14 @@ struct Cli {
     #[arg(long)]
     seed: Option<u64>,
 
+    /// Target session-aggregate all-in EV stddev across independent runs,
+    /// in BB. The per-hand Monte Carlo target is auto-scaled from the
+    /// session's all-in pot distribution so this bound holds. Set to 0
+    /// (or negative) to disable auto-scaling and fall back to the fixed
+    /// per-hand target_stderr.
+    #[arg(long, default_value_t = 1.0)]
+    session_target_bb: f64,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -360,8 +368,11 @@ fn main() {
     let cli = Cli::parse();
     let no_config = cli.no_config;
     let log_format = cli.log_format;
+    let session_target_bb =
+        if cli.session_target_bb > 0.0 { Some(cli.session_target_bb) } else { None };
     let ev_cfg = EvConfig {
         seed: cli.seed,
+        session_target_bb,
         ..EvConfig::default()
     };
 

@@ -7,22 +7,37 @@ use rayon::prelude::*;
 use crate::card::{Card, evaluate};
 use crate::parser::Hand;
 
-// Defaults sized so the MC estimator's standard error per pot slice is below
-// ~0.2% of pot size (target_stderr operates on equity, which is already in
-// fractional-of-pot units). That is a 2.5× tightening over the spec's 0.5%
-// ceiling and keeps session-level EV stable to within ~1 BB for typical
-// session sizes, while trivial spots converge in a single 20k chunk.
-const DEFAULT_TARGET_STDERR: f64 = 0.002;
+// Fallback per-hand equity stderr used when session metadata is unavailable
+// (no MC-eligible hands). `target_stderr` operates on equity, which is in
+// fractional-of-pot units; 0.002 ≈ 0.2% of pot per-hand stderr.
+pub(crate) const DEFAULT_TARGET_STDERR: f64 = 0.002;
 const DEFAULT_CHUNK_SIZE: usize = 20_000;
-const DEFAULT_MAX_SAMPLES: usize = 2_000_000;
+const DEFAULT_MAX_SAMPLES: usize = 4_000_000;
 const DEFAULT_MIN_SAMPLES: usize = 20_000;
+const DEFAULT_SESSION_TARGET_BB: f64 = 1.0;
+
+// Clamp bounds on the auto-scaled per-hand target_stderr:
+//   ceiling → never run looser than this (so single-hand sessions still get
+//             a meaningful equity estimate even with a big session_target).
+//   floor   → never request a target tighter than max_samples can deliver
+//             (at var≈0.25 ceiling, 5e-5 stderr needs ~100M samples).
+const TARGET_STDERR_CEILING: f64 = 5e-3;
+const TARGET_STDERR_FLOOR: f64 = 5e-5;
 
 #[derive(Clone, Debug)]
 pub struct EvConfig {
     /// `Some(seed)` → every MC stream is derived from this master seed,
     /// so a run is bit-for-bit reproducible. `None` → entropy-seeded.
     pub seed: Option<u64>,
+    /// Per-hand equity stderr target. Used as a fallback and floor when
+    /// `session_target_bb` auto-scaling applies.
     pub target_stderr: f64,
+    /// When `Some(bb)`, the session-aggregate all-in EV stddev across
+    /// independent runs is targeted to stay within `bb` big-blinds. The
+    /// caller auto-scales the per-hand `target_stderr` accordingly from the
+    /// session's all-in pot distribution. `None` disables auto-scaling and
+    /// uses `target_stderr` verbatim.
+    pub session_target_bb: Option<f64>,
     pub chunk_size: usize,
     pub max_samples: usize,
     pub min_samples: usize,
@@ -36,6 +51,7 @@ impl Default for EvConfig {
         Self {
             seed: None,
             target_stderr: DEFAULT_TARGET_STDERR,
+            session_target_bb: Some(DEFAULT_SESSION_TARGET_BB),
             chunk_size: DEFAULT_CHUNK_SIZE,
             max_samples: DEFAULT_MAX_SAMPLES,
             min_samples: DEFAULT_MIN_SAMPLES,
@@ -51,6 +67,26 @@ impl EvConfig {
             ..Self::default()
         }
     }
+}
+
+/// Derive a per-hand equity-stderr target from the session's MC-eligible
+/// all-in pot sizes so the session-aggregate EV (summed over all-in hands)
+/// drifts less than `session_target_bb` BB across independent MC runs.
+///
+/// Derivation: for each MC hand the per-player EV stddev (in BB) is bounded
+/// by `equity_stderr × pot_bb`. Independent per-hand errors add in
+/// quadrature, so `session_stddev ≤ equity_stderr × sqrt(Σ pot_bb²)`.
+/// Inverting gives `equity_stderr = session_target_bb / sqrt(Σ pot_bb²)`.
+///
+/// Clamped to `[TARGET_STDERR_FLOOR, TARGET_STDERR_CEILING]`: the floor keeps
+/// runtime bounded for very large sessions (target may be unreachable within
+/// `max_samples`); the ceiling prevents under-sampling on tiny sessions where
+/// the unclamped target would be absurdly loose.
+pub fn target_stderr_for_session(session_target_bb: f64, pot_bb_sum_sq: f64) -> f64 {
+    if session_target_bb <= 0.0 || pot_bb_sum_sq <= 0.0 || !pot_bb_sum_sq.is_finite() {
+        return DEFAULT_TARGET_STDERR;
+    }
+    (session_target_bb / pot_bb_sum_sq.sqrt()).clamp(TARGET_STDERR_FLOOR, TARGET_STDERR_CEILING)
 }
 
 // SplitMix64 — fast, high-quality 64-bit integer hash. Used to derive
@@ -519,6 +555,49 @@ mod tests {
         // range.
         assert!((eq[0] + eq[1] - 1.0).abs() < 1e-9);
         assert!(eq[0] > 0.9);
+    }
+
+    #[test]
+    fn target_stderr_scales_inversely_with_session_rms_pot() {
+        // Same session_target_bb, different aggregate pot² → tighter target
+        // for the larger session.
+        let small = target_stderr_for_session(1.0, 100.0 * 100.0);
+        let large = target_stderr_for_session(1.0, 100.0 * 100.0 * 100.0);
+        assert!(
+            large < small,
+            "larger session must pick tighter target_stderr: small={small:.6}, large={large:.6}"
+        );
+
+        // Zero/invalid metadata → fallback default (no auto-scaling effect).
+        assert!((target_stderr_for_session(1.0, 0.0) - DEFAULT_TARGET_STDERR).abs() < 1e-12);
+        assert!((target_stderr_for_session(1.0, f64::NAN) - DEFAULT_TARGET_STDERR).abs() < 1e-12);
+        assert!((target_stderr_for_session(0.0, 100.0) - DEFAULT_TARGET_STDERR).abs() < 1e-12);
+
+        // Tighter session target → tighter per-hand target.
+        let tight = target_stderr_for_session(0.5, 80.0 * 200.0 * 200.0);
+        let loose = target_stderr_for_session(2.0, 80.0 * 200.0 * 200.0);
+        assert!(tight < loose, "tight={tight:.6}, loose={loose:.6}");
+
+        // Predicted session stddev (unclamped region) equals session_target_bb.
+        let sum_sq = 80.0 * 200.0 * 200.0;
+        let t = target_stderr_for_session(1.0, sum_sq);
+        let predicted = t * sum_sq.sqrt();
+        // Derived target = 1 / sqrt(80*40000) ≈ 5.59e-4 — sits inside the
+        // clamp range, so inversion must be exact.
+        assert!(
+            t > TARGET_STDERR_FLOOR && t < TARGET_STDERR_CEILING,
+            "derived target {t:.6} should not be clamped in this regime"
+        );
+        assert!(
+            (predicted - 1.0).abs() < 1e-10,
+            "predicted session stddev {predicted:.6} BB should equal target 1.0"
+        );
+
+        // Extreme sessions clamp instead of asking for impossible precision.
+        let huge = target_stderr_for_session(1.0, 100_000.0 * 200.0 * 200.0);
+        assert!((huge - TARGET_STDERR_FLOOR).abs() < 1e-12, "huge session clamps to floor");
+        let tiny = target_stderr_for_session(1.0, 1.0);
+        assert!((tiny - TARGET_STDERR_CEILING).abs() < 1e-12, "tiny session clamps to ceiling");
     }
 
     #[test]

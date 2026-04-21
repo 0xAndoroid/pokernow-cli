@@ -157,11 +157,12 @@ pub fn compute_stats(data: &GameData) -> StatsResult {
 }
 
 pub fn compute_stats_with_ev_config(data: &GameData, cfg: &EvConfig) -> StatsResult {
+    let effective_cfg = derive_effective_ev_config(data, cfg);
     let map: HashMap<String, PlayerStats> = data
         .hands
         .par_iter()
         .enumerate()
-        .map(|(idx, h)| hand_stats(h, data, cfg, idx as u64))
+        .map(|(idx, h)| hand_stats(h, data, &effective_cfg, idx as u64))
         .reduce(HashMap::new, merge_maps);
 
     let mut players: Vec<PlayerStats> = map.into_values().collect();
@@ -170,6 +171,87 @@ pub fn compute_stats_with_ev_config(data: &GameData, cfg: &EvConfig) -> StatsRes
         total_hands: data.hands.len(),
         players,
     }
+}
+
+/// If `cfg.session_target_bb` is set, scan the session's MC-eligible all-in
+/// hands and derive a per-hand `target_stderr` that bounds the aggregate
+/// drift. The derived value REPLACES `cfg.target_stderr` — auto-scaling is
+/// the authoritative knob when enabled. Callers wanting manual per-hand
+/// control set `session_target_bb = None`.
+fn derive_effective_ev_config(data: &GameData, cfg: &EvConfig) -> EvConfig {
+    let Some(session_target) = cfg.session_target_bb else {
+        return cfg.clone();
+    };
+    let sum_sq: f64 = data.hands.iter().filter_map(mc_hand_pot_bb).map(|p| p * p).sum();
+    if sum_sq <= 0.0 {
+        return cfg.clone();
+    }
+    EvConfig {
+        target_stderr: ev::target_stderr_for_session(session_target, sum_sq),
+        ..cfg.clone()
+    }
+}
+
+/// Mirrors the gating in `process_all_in_ev` and returns the pot in BB when
+/// the hand will go through the stochastic Monte Carlo path (and therefore
+/// contribute variance to session aggregates). Turn/flop all-ins resolve via
+/// exact enumeration and have zero MC variance — they return `None`.
+fn mc_hand_pot_bb(hand: &Hand) -> Option<f64> {
+    if !hand.real_showdown || hand.effective_bb <= 0.0 {
+        return None;
+    }
+
+    let ai_street = hand
+        .streets
+        .iter()
+        .rev()
+        .find(|sd| sd.actions.iter().any(|a| a.all_in))
+        .map(|sd| sd.street)?;
+
+    let has_action_after = hand.streets.iter().any(|sd| {
+        sd.street > ai_street
+            && sd.actions.iter().any(|a| matches!(a.kind, ActionType::Bet | ActionType::Call))
+    });
+    if has_action_after {
+        return None;
+    }
+
+    // MC only runs when more than 2 cards remain to deal (≥3 board cards
+    // missing). With 3+ board cards already out, `calculate_multi_equity`
+    // falls through to exact enumeration — no MC variance.
+    let board_len: usize = hand
+        .streets
+        .iter()
+        .filter(|sd| sd.street > Street::Preflop && sd.street <= ai_street)
+        .map(|sd| sd.new_cards.len())
+        .sum();
+    if board_len >= 3 {
+        return None;
+    }
+
+    let folded_seats: HashSet<u8> = hand
+        .streets
+        .iter()
+        .flat_map(|sd| sd.actions.iter())
+        .filter(|a| a.kind == ActionType::Fold)
+        .map(|a| a.seat)
+        .collect();
+
+    let known_count = hand
+        .players
+        .iter()
+        .filter(|p| !folded_seats.contains(&p.seat))
+        .filter(|p| get_hole_cards(hand, p.seat).is_some_and(|c| c.len() == 2))
+        .count();
+    if known_count < 2 {
+        return None;
+    }
+
+    let pot_chips: f64 = hand.winners.iter().map(|w| w.amount).sum();
+    if pot_chips <= 0.0 {
+        return None;
+    }
+    Some(pot_chips / hand.effective_bb)
 }
 
 fn merge_maps(
@@ -1818,5 +1900,179 @@ mod tests {
             sd < threshold,
             "stddev of EV across 10 seeded runs = {sd:.4} BB, threshold = {threshold:.4} BB"
         );
+    }
+
+    // Session-aggregate convergence: across many all-in hands, summing
+    // per-hand EV diffs with independent MC seeds must stay within
+    // `session_target_bb` across runs. This is the user-facing guarantee —
+    // `pokernow stats --player Alice` without `--seed` must report a number
+    // that moves by less than 1 BB across independent invocations.
+    //
+    // Sized for CI: 20 AA-vs-KK preflop all-ins at 50 BB pots (stack=25 BB),
+    // 6 independent seeded runs. Derived per-hand target ≈ 3.5e-3 → ~30k
+    // samples/hand; total ~3-5M samples in seconds wall time with rayon.
+    #[test]
+    fn session_aggregate_ev_converges_below_1_bb() {
+        let builders: Vec<HandBuilder> =
+            (0..20).map(|i| preflop_allin_hand(1.0, 25.0, true).number(i + 1)).collect();
+        let refs: Vec<&HandBuilder> = builders.iter().collect();
+        let data = parse_multi_game_data(&refs);
+
+        let target_bb = 1.0;
+        let sums_alice: Vec<f64> = (0..6u64)
+            .map(|i| {
+                let cfg = EvConfig {
+                    session_target_bb: Some(target_bb),
+                    ..EvConfig::deterministic(0xC0DE_0000 + i)
+                };
+                let r = compute_stats_with_ev_config(&data, &cfg);
+                r.players.iter().find(|p| p.name == "Alice").unwrap().all_in_ev_diff
+            })
+            .collect();
+
+        let mean: f64 = sums_alice.iter().sum::<f64>() / sums_alice.len() as f64;
+        let var: f64 =
+            sums_alice.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / sums_alice.len() as f64;
+        let sd = var.sqrt();
+        assert!(
+            sd < target_bb,
+            "session-aggregate EV stddev across 6 seeded runs = {sd:.4} BB \
+             (target = {target_bb} BB)"
+        );
+    }
+
+    // Larger sessions must auto-scale to a tighter per-hand target_stderr
+    // than smaller ones. Verified via the derived EvConfig.
+    #[test]
+    fn target_stderr_tightens_as_session_grows() {
+        let small: Vec<HandBuilder> =
+            (0..3).map(|i| preflop_allin_hand(1.0, 100.0, true).number(i + 1)).collect();
+        let small_refs: Vec<&HandBuilder> = small.iter().collect();
+        let small_data = parse_multi_game_data(&small_refs);
+
+        let large: Vec<HandBuilder> =
+            (0..60).map(|i| preflop_allin_hand(1.0, 100.0, true).number(i + 1)).collect();
+        let large_refs: Vec<&HandBuilder> = large.iter().collect();
+        let large_data = parse_multi_game_data(&large_refs);
+
+        let base_cfg = EvConfig {
+            session_target_bb: Some(1.0),
+            ..EvConfig::default()
+        };
+        let small_cfg = derive_effective_ev_config(&small_data, &base_cfg);
+        let large_cfg = derive_effective_ev_config(&large_data, &base_cfg);
+
+        assert!(
+            large_cfg.target_stderr < small_cfg.target_stderr,
+            "large session target_stderr={:.6} must be tighter than small={:.6}",
+            large_cfg.target_stderr,
+            small_cfg.target_stderr
+        );
+        // Ratio must track sqrt(N): 60 hands vs 3 hands → √20 ≈ 4.47× tighter.
+        let ratio = small_cfg.target_stderr / large_cfg.target_stderr;
+        assert!(
+            ratio > 4.0 && ratio < 5.0,
+            "expected ~sqrt(20) ≈ 4.47× tightening, got {ratio:.2}"
+        );
+    }
+
+    // Sessions with no MC-eligible hands keep the baseline target_stderr.
+    #[test]
+    fn target_stderr_falls_back_when_no_mc_hands() {
+        // Non-all-in hand: no MC runs, so session auto-scaling should
+        // leave `target_stderr` at the baseline.
+        let b = HandBuilder::new()
+            .blinds(0.5, 1.0)
+            .player("p1", 1, "Alice", 100.0)
+            .player("p2", 2, "Bob", 100.0)
+            .dealer(1)
+            .sb(1, 0.5)
+            .bb(2, 1.0)
+            .fold(1)
+            .win(2, 1.5);
+        let data = parse_game_data(&b);
+
+        let base = EvConfig::default();
+        let derived = derive_effective_ev_config(&data, &base);
+        assert!((derived.target_stderr - base.target_stderr).abs() < 1e-12);
+    }
+
+    // Disabling session auto-scaling (session_target_bb = None) must leave
+    // target_stderr untouched even on MC-heavy sessions.
+    #[test]
+    fn session_target_none_disables_auto_scaling() {
+        let builders: Vec<HandBuilder> =
+            (0..40).map(|i| preflop_allin_hand(1.0, 100.0, true).number(i + 1)).collect();
+        let refs: Vec<&HandBuilder> = builders.iter().collect();
+        let data = parse_multi_game_data(&refs);
+
+        let cfg = EvConfig {
+            session_target_bb: None,
+            target_stderr: 0.002,
+            ..EvConfig::default()
+        };
+        let derived = derive_effective_ev_config(&data, &cfg);
+        assert!((derived.target_stderr - 0.002).abs() < 1e-12);
+    }
+
+    // Ignored benchmark reproducing the user's "80-hand, 200 BB pot" scenario
+    // with high-precision drift reporting. Run manually with:
+    //   cargo test --release --lib -- --ignored --nocapture bench_session_drift
+    #[test]
+    #[ignore = "benchmark, run manually with --ignored --nocapture"]
+    fn bench_session_drift_80_hand_200bb() {
+        use std::time::Instant;
+
+        fn measure(
+            label: &str,
+            data: &GameData,
+            cfg_factory: impl Fn(u64) -> EvConfig,
+        ) -> (f64, f64, std::time::Duration) {
+            const RUNS: u64 = 10;
+            let mut values = Vec::with_capacity(RUNS as usize);
+            let start = Instant::now();
+            for i in 0..RUNS {
+                let cfg = cfg_factory(i);
+                let r = compute_stats_with_ev_config(data, &cfg);
+                let alice = r.players.iter().find(|p| p.name == "Alice").unwrap();
+                values.push(alice.all_in_ev_diff);
+            }
+            let elapsed = start.elapsed();
+            let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
+            let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let drift = hi - lo;
+            let mean: f64 = values.iter().sum::<f64>() / values.len() as f64;
+            let var: f64 =
+                values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
+            let sd = var.sqrt();
+            let mean_runtime = elapsed / RUNS as u32;
+            println!(
+                "  {label:32} drift={drift:7.3} BB  stddev={sd:6.3} BB  mean_run={mean_runtime:?}"
+            );
+            (drift, sd, mean_runtime)
+        }
+
+        let builders: Vec<HandBuilder> =
+            (0..80).map(|i| preflop_allin_hand(1.0, 100.0, i % 2 == 0).number(i + 1)).collect();
+        let refs: Vec<&HandBuilder> = builders.iter().collect();
+        let data = parse_multi_game_data(&refs);
+
+        println!("\n80-hand preflop all-in session, 200 BB pots\n");
+        measure("BEFORE (target_stderr=0.002)", &data, |i| EvConfig {
+            seed: Some(0xBEEF_0000 + i),
+            target_stderr: 0.002,
+            session_target_bb: None,
+            ..EvConfig::default()
+        });
+        measure("AFTER  (auto-scale @ 1.0 BB)", &data, |i| EvConfig {
+            seed: Some(0xBEEF_0000 + i),
+            session_target_bb: Some(1.0),
+            ..EvConfig::default()
+        });
+        measure("AFTER  (auto-scale @ 0.3 BB)", &data, |i| EvConfig {
+            seed: Some(0xBEEF_0000 + i),
+            session_target_bb: Some(0.3),
+            ..EvConfig::default()
+        });
     }
 }

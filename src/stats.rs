@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
+use indicatif::ProgressBar;
 use rayon::prelude::*;
 
 use crate::card::Card;
@@ -157,12 +158,24 @@ pub fn compute_stats(data: &GameData) -> StatsResult {
 }
 
 pub fn compute_stats_with_ev_config(data: &GameData, cfg: &EvConfig) -> StatsResult {
+    compute_stats_with_progress(data, cfg, &ProgressBar::hidden())
+}
+
+pub fn compute_stats_with_progress(
+    data: &GameData,
+    cfg: &EvConfig,
+    progress: &ProgressBar,
+) -> StatsResult {
     let effective_cfg = derive_effective_ev_config(data, cfg);
     let map: HashMap<String, PlayerStats> = data
         .hands
         .par_iter()
         .enumerate()
-        .map(|(idx, h)| hand_stats(h, data, &effective_cfg, idx as u64))
+        .map(|(idx, h)| {
+            let out = hand_stats(h, data, &effective_cfg, idx as u64);
+            progress.inc(1);
+            out
+        })
         .reduce(HashMap::new, merge_maps);
 
     let mut players: Vec<PlayerStats> = map.into_values().collect();

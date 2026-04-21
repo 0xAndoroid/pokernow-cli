@@ -14,7 +14,7 @@ pub(crate) const DEFAULT_TARGET_STDERR: f64 = 0.002;
 const DEFAULT_CHUNK_SIZE: usize = 20_000;
 const DEFAULT_MAX_SAMPLES: usize = 4_000_000;
 const DEFAULT_MIN_SAMPLES: usize = 20_000;
-const DEFAULT_SESSION_TARGET_BB: f64 = 1.0;
+const DEFAULT_SESSION_TARGET_BB: f64 = 5.0;
 
 // Clamp bounds on the auto-scaled per-hand target_stderr:
 //   ceiling → never run looser than this (so single-hand sessions still get

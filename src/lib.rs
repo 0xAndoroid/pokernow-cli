@@ -1,6 +1,7 @@
 pub mod card;
 pub mod config;
 pub mod display;
+pub mod ev;
 pub mod parser;
 pub mod parser_log;
 pub mod ranking;

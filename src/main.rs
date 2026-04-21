@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use pokernow::TableSize;
 use pokernow::config::{BlindRemap, Config};
 use pokernow::display;
+use pokernow::ev::EvConfig;
 use pokernow::parser::{self, GameData};
 use pokernow::parser_log;
 use pokernow::ranking::{self, RankingFilter};
@@ -51,6 +52,12 @@ struct Cli {
     /// Blind remapping (format: "from_sb/from_bb:to_sb/to_bb,...")
     #[arg(long)]
     blind_remap: Option<String>,
+
+    /// Seed the Monte Carlo EV estimator for reproducible output.
+    /// Without this flag MC is entropy-seeded and each run will differ
+    /// slightly within the converged stderr.
+    #[arg(long)]
+    seed: Option<u64>,
 
     #[command(subcommand)]
     command: Command,
@@ -353,6 +360,10 @@ fn main() {
     let cli = Cli::parse();
     let no_config = cli.no_config;
     let log_format = cli.log_format;
+    let ev_cfg = EvConfig {
+        seed: cli.seed,
+        ..EvConfig::default()
+    };
 
     let (files, action) = match cli.command {
         Command::GenConfig => {
@@ -450,7 +461,7 @@ fn main() {
 
     match action {
         CliAction::Stats(player_filter) => {
-            let result = stats::compute_stats(&data);
+            let result = stats::compute_stats_with_ev_config(&data, &ev_cfg);
             if let Some(ref name) = player_filter {
                 stats::print_single_player_stats(&result, name, use_chips);
             } else {
@@ -486,7 +497,7 @@ fn main() {
             search::print_results(&results, use_chips);
         }
         CliAction::Summary => {
-            summary::print_summary(&data, use_chips);
+            summary::print_summary_with_ev_config(&data, use_chips, &ev_cfg);
         }
         CliAction::BestHands(filter) => {
             let results = ranking::rank_hands(&data, &filter);

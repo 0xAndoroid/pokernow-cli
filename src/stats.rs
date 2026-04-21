@@ -1,7 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
-use crate::card::{Card, evaluate};
+use rayon::prelude::*;
+
+use crate::card::Card;
+use crate::ev::{self, EvConfig};
 use crate::parser::{
     ActionType, GameData, Hand, Position, Street, StreetData, invested, net_profit, saw_street,
     went_to_showdown,
@@ -47,6 +50,49 @@ pub struct PlayerStats {
     pub all_in_ev_diff: f64,
     pub all_in_ev_diff_chips: f64,
     pub all_in_hands: u32,
+}
+
+impl std::ops::AddAssign<&PlayerStats> for PlayerStats {
+    fn add_assign(&mut self, rhs: &PlayerStats) {
+        if self.player_id.is_empty() {
+            self.player_id.clone_from(&rhs.player_id);
+        }
+        if self.name.is_empty() {
+            self.name.clone_from(&rhs.name);
+        }
+        self.hands_played += rhs.hands_played;
+        self.hands_at_table += rhs.hands_at_table;
+        self.vpip_hands += rhs.vpip_hands;
+        self.pfr_hands += rhs.pfr_hands;
+        self.three_bet_opp += rhs.three_bet_opp;
+        self.three_bets += rhs.three_bets;
+        self.fold_to_three_bet_opp += rhs.fold_to_three_bet_opp;
+        self.fold_to_three_bets += rhs.fold_to_three_bets;
+        self.cold_call_opp += rhs.cold_call_opp;
+        self.cold_calls += rhs.cold_calls;
+        self.open_raises += rhs.open_raises;
+        self.limps += rhs.limps;
+        self.cbet_opp += rhs.cbet_opp;
+        self.cbets += rhs.cbets;
+        self.fold_to_cbet_opp += rhs.fold_to_cbet_opp;
+        self.fold_to_cbets += rhs.fold_to_cbets;
+        self.postflop_bets += rhs.postflop_bets;
+        self.postflop_calls += rhs.postflop_calls;
+        self.saw_flop += rhs.saw_flop;
+        self.won_when_saw_flop += rhs.won_when_saw_flop;
+        self.went_to_showdown += rhs.went_to_showdown;
+        self.won_at_showdown += rhs.won_at_showdown;
+        self.net_bb += rhs.net_bb;
+        self.net_chips += rhs.net_chips;
+        for i in 0..5 {
+            self.pos_vpip[i] += rhs.pos_vpip[i];
+            self.pos_pfr[i] += rhs.pos_pfr[i];
+            self.pos_hands[i] += rhs.pos_hands[i];
+        }
+        self.all_in_ev_diff += rhs.all_in_ev_diff;
+        self.all_in_ev_diff_chips += rhs.all_in_ev_diff_chips;
+        self.all_in_hands += rhs.all_in_hands;
+    }
 }
 
 fn pos_index(pos: Position, is_straddle: bool) -> usize {
@@ -107,39 +153,16 @@ fn resolve_name(data: &GameData, p: &crate::parser::PlayerInHand) -> String {
 }
 
 pub fn compute_stats(data: &GameData) -> StatsResult {
-    let mut map: HashMap<String, PlayerStats> = HashMap::new();
+    compute_stats_with_ev_config(data, &EvConfig::default())
+}
 
-    for hand in &data.hands {
-        let seat_to_name: HashMap<u8, String> =
-            hand.players.iter().map(|p| (p.seat, resolve_name(data, p))).collect();
-
-        for p in &hand.players {
-            let name = &seat_to_name[&p.seat];
-            let stats = map.entry(name.clone()).or_insert_with(|| PlayerStats {
-                player_id: p.id.clone(),
-                name: name.clone(),
-                ..PlayerStats::default()
-            });
-
-            stats.hands_at_table += 1;
-            let profit = net_profit(hand, p.seat);
-            stats.net_chips += profit;
-            if hand.effective_bb > 0.0 {
-                stats.net_bb += profit / hand.effective_bb;
-            }
-
-            if !hand.bomb_pot {
-                stats.hands_played += 1;
-                let is_str = hand.straddle_seat == Some(p.seat);
-                stats.pos_hands[pos_index(p.position, is_str)] += 1;
-            }
-        }
-
-        process_preflop(hand, &seat_to_name, &mut map);
-        process_postflop(hand, &seat_to_name, &mut map);
-        process_showdown(hand, &seat_to_name, &mut map);
-        process_all_in_ev(hand, &seat_to_name, &mut map);
-    }
+pub fn compute_stats_with_ev_config(data: &GameData, cfg: &EvConfig) -> StatsResult {
+    let map: HashMap<String, PlayerStats> = data
+        .hands
+        .par_iter()
+        .enumerate()
+        .map(|(idx, h)| hand_stats(h, data, cfg, idx as u64))
+        .reduce(HashMap::new, merge_maps);
 
     let mut players: Vec<PlayerStats> = map.into_values().collect();
     players.sort_unstable_by(|a, b| b.net_bb.total_cmp(&a.net_bb));
@@ -147,6 +170,64 @@ pub fn compute_stats(data: &GameData) -> StatsResult {
         total_hands: data.hands.len(),
         players,
     }
+}
+
+fn merge_maps(
+    mut acc: HashMap<String, PlayerStats>,
+    other: HashMap<String, PlayerStats>,
+) -> HashMap<String, PlayerStats> {
+    use std::collections::hash_map::Entry;
+    for (name, stats) in other {
+        match acc.entry(name) {
+            Entry::Occupied(mut e) => {
+                *e.get_mut() += &stats;
+            }
+            Entry::Vacant(e) => {
+                e.insert(stats);
+            }
+        }
+    }
+    acc
+}
+
+fn hand_stats(
+    hand: &Hand,
+    data: &GameData,
+    cfg: &EvConfig,
+    hand_idx: u64,
+) -> HashMap<String, PlayerStats> {
+    let mut map: HashMap<String, PlayerStats> = HashMap::new();
+    let seat_to_name: HashMap<u8, String> =
+        hand.players.iter().map(|p| (p.seat, resolve_name(data, p))).collect();
+
+    for p in &hand.players {
+        let name = &seat_to_name[&p.seat];
+        let stats = map.entry(name.clone()).or_insert_with(|| PlayerStats {
+            player_id: p.id.clone(),
+            name: name.clone(),
+            ..PlayerStats::default()
+        });
+
+        stats.hands_at_table += 1;
+        let profit = net_profit(hand, p.seat);
+        stats.net_chips += profit;
+        if hand.effective_bb > 0.0 {
+            stats.net_bb += profit / hand.effective_bb;
+        }
+
+        if !hand.bomb_pot {
+            stats.hands_played += 1;
+            let is_str = hand.straddle_seat == Some(p.seat);
+            stats.pos_hands[pos_index(p.position, is_str)] += 1;
+        }
+    }
+
+    process_preflop(hand, &seat_to_name, &mut map);
+    process_postflop(hand, &seat_to_name, &mut map);
+    process_showdown(hand, &seat_to_name, &mut map);
+    process_all_in_ev(hand, &seat_to_name, &mut map, cfg, hand_idx);
+
+    map
 }
 
 fn process_preflop(
@@ -456,6 +537,8 @@ fn process_all_in_ev(
     hand: &Hand,
     seat_to_name: &HashMap<u8, String>,
     map: &mut HashMap<String, PlayerStats>,
+    cfg: &EvConfig,
+    hand_idx: u64,
 ) {
     if !hand.real_showdown || hand.effective_bb <= 0.0 {
         return;
@@ -530,7 +613,7 @@ fn process_all_in_ev(
     // changes, and global equity renormalization is incorrect (a player who
     // loses to a non-eligible player may still win the side pot).
     let mut prev_threshold = 0.0_f64;
-    for &threshold in &sorted_inv {
+    for (slice_idx, &threshold) in sorted_inv.iter().enumerate() {
         let marginal = threshold - prev_threshold;
         if marginal <= 0.0 {
             continue;
@@ -552,7 +635,8 @@ fn process_all_in_ev(
             ev_expected[eligible[0]] += total_slice;
         } else {
             let slice_players: Vec<(u8, &Vec<Card>)> = eligible.iter().map(|&i| known[i]).collect();
-            let slice_eq = calculate_multi_equity(&slice_players, &board, hand);
+            let seed_salt = ev::mix_seed(hand_idx, slice_idx as u64, 0);
+            let slice_eq = ev::calculate_multi_equity(&slice_players, &board, hand, cfg, seed_salt);
 
             for (j, &i) in eligible.iter().enumerate() {
                 ev_expected[i] += slice_eq[j] * total_slice;
@@ -575,195 +659,6 @@ fn process_all_in_ev(
             stats.all_in_ev_diff += ev_diff;
             stats.all_in_ev_diff_chips += ev_diff_chips;
             stats.all_in_hands += 1;
-        }
-    }
-}
-
-fn calculate_multi_equity(players: &[(u8, &Vec<Card>)], board: &[Card], hand: &Hand) -> Vec<f64> {
-    let cards_needed = 5 - board.len();
-    if cards_needed == 0 {
-        return evaluate_final(players, board);
-    }
-
-    let mut dead: HashSet<Card> = HashSet::new();
-    for (_, cards) in players {
-        for &c in *cards {
-            dead.insert(c);
-        }
-    }
-    for &c in board {
-        dead.insert(c);
-    }
-    for cards in hand.shown_cards.values() {
-        for &c in cards {
-            dead.insert(c);
-        }
-    }
-
-    let deck: Vec<Card> = build_remaining_deck(&dead);
-
-    if cards_needed <= 2 {
-        enumerate_equity(players, board, &deck, cards_needed)
-    } else {
-        monte_carlo_equity(players, board, &deck, cards_needed, 10_000)
-    }
-}
-
-fn build_remaining_deck(dead: &HashSet<Card>) -> Vec<Card> {
-    let mut deck = Vec::with_capacity(52);
-    for rank in 2..=14u8 {
-        for suit in 0..4u8 {
-            let c = Card::new(rank, suit);
-            if !dead.contains(&c) {
-                deck.push(c);
-            }
-        }
-    }
-    deck
-}
-
-fn evaluate_final(players: &[(u8, &Vec<Card>)], board: &[Card]) -> Vec<f64> {
-    let n = players.len();
-    let mut equities = vec![0.0; n];
-
-    let mut ranks = Vec::with_capacity(n);
-    for (_, hole) in players {
-        let mut combined = Vec::with_capacity(hole.len() + board.len());
-        combined.extend_from_slice(hole);
-        combined.extend_from_slice(board);
-        ranks.push(evaluate(&combined));
-    }
-
-    let best = ranks.iter().map(|r| r.score).max().unwrap_or(0);
-    let winners: Vec<usize> =
-        ranks.iter().enumerate().filter(|(_, r)| r.score == best).map(|(i, _)| i).collect();
-
-    let share = 1.0 / winners.len() as f64;
-    for &i in &winners {
-        equities[i] = share;
-    }
-    equities
-}
-
-fn enumerate_equity(
-    players: &[(u8, &Vec<Card>)],
-    board: &[Card],
-    deck: &[Card],
-    cards_needed: usize,
-) -> Vec<f64> {
-    let n = players.len();
-    let mut wins = vec![0.0_f64; n];
-    let mut total = 0u64;
-
-    let dk = deck.len();
-    let mut full_board = Vec::with_capacity(5);
-    let mut scores = Vec::with_capacity(n);
-    let mut combined = Vec::with_capacity(7);
-
-    if cards_needed == 1 {
-        for card in deck {
-            full_board.clear();
-            full_board.extend_from_slice(board);
-            full_board.push(*card);
-
-            tally_result(players, &full_board, &mut wins, &mut scores, &mut combined);
-            total += 1;
-        }
-    } else {
-        for i in 0..dk {
-            for j in (i + 1)..dk {
-                full_board.clear();
-                full_board.extend_from_slice(board);
-                full_board.push(deck[i]);
-                full_board.push(deck[j]);
-
-                tally_result(players, &full_board, &mut wins, &mut scores, &mut combined);
-                total += 1;
-            }
-        }
-    }
-
-    if total == 0 {
-        return vec![1.0 / n as f64; n];
-    }
-
-    let t = total as f64;
-    wins.iter().map(|w| w / t).collect()
-}
-
-fn monte_carlo_equity(
-    players: &[(u8, &Vec<Card>)],
-    board: &[Card],
-    deck: &[Card],
-    cards_needed: usize,
-    samples: usize,
-) -> Vec<f64> {
-    let n = players.len();
-    let mut wins = vec![0.0_f64; n];
-    let dk = deck.len();
-    let mut rng_state: u64 = 0xDEAD_BEEF_CAFE_1234;
-    let mut full_board = Vec::with_capacity(5);
-    let mut scores = Vec::with_capacity(n);
-    let mut combined = Vec::with_capacity(7);
-
-    for _ in 0..samples {
-        full_board.clear();
-        full_board.extend_from_slice(board);
-
-        let mut used = [false; 52];
-        for _ in 0..cards_needed {
-            loop {
-                rng_state = rng_state
-                    .wrapping_mul(6_364_136_223_846_793_005)
-                    .wrapping_add(1_442_695_040_888_963_407);
-                let idx = ((rng_state >> 33) as usize) % dk;
-                if !used[idx] {
-                    used[idx] = true;
-                    full_board.push(deck[idx]);
-                    break;
-                }
-            }
-        }
-
-        tally_result(players, &full_board, &mut wins, &mut scores, &mut combined);
-    }
-
-    let t = samples as f64;
-    wins.iter().map(|w| w / t).collect()
-}
-
-fn tally_result(
-    players: &[(u8, &Vec<Card>)],
-    board: &[Card],
-    wins: &mut [f64],
-    scores: &mut Vec<u32>,
-    combined: &mut Vec<Card>,
-) {
-    scores.clear();
-    let mut best_score = 0u32;
-
-    for (_, hole) in players {
-        combined.clear();
-        combined.extend_from_slice(hole);
-        combined.extend_from_slice(board);
-        let s = evaluate(combined).score;
-        if s > best_score {
-            best_score = s;
-        }
-        scores.push(s);
-    }
-
-    let mut winner_count = 0u32;
-    for &s in scores.iter() {
-        if s == best_score {
-            winner_count += 1;
-        }
-    }
-
-    let share = 1.0 / f64::from(winner_count);
-    for (i, &s) in scores.iter().enumerate() {
-        if s == best_score {
-            wins[i] += share;
         }
     }
 }
@@ -902,7 +797,10 @@ mod tests {
     use crate::parser::test_helpers::*;
 
     fn stats_for(data: &crate::parser::GameData, name: &str) -> PlayerStats {
-        let result = compute_stats(data);
+        // Tests must be reproducible: pin the MC seed so convergence
+        // checks and cross-hand equality assertions are stable.
+        let cfg = EvConfig::deterministic(0x5EED_1234_5678_9ABC);
+        let result = compute_stats_with_ev_config(data, &cfg);
         result.players.into_iter().find(|s| s.name == name).unwrap()
     }
 
@@ -1863,6 +1761,62 @@ mod tests {
             "net_chips={}, expected={}",
             pranav.net_chips,
             expected_net,
+        );
+    }
+
+    // Regression test: with --seed fixed, two full compute_stats runs over the
+    // same session produce bit-for-bit identical all-in EV numbers. This is
+    // the user-visible guarantee of `--seed 42`.
+    #[test]
+    fn seeded_compute_stats_is_reproducible() {
+        let b = preflop_allin_hand(1.0, 100.0, true);
+        let data = parse_game_data(&b);
+
+        let cfg = EvConfig::deterministic(42);
+        let r1 = compute_stats_with_ev_config(&data, &cfg);
+        let r2 = compute_stats_with_ev_config(&data, &cfg);
+
+        for (p1, p2) in r1.players.iter().zip(r2.players.iter()) {
+            assert_eq!(p1.name, p2.name);
+            assert_eq!(
+                p1.all_in_ev_diff.to_bits(),
+                p2.all_in_ev_diff.to_bits(),
+                "seeded all_in_ev_diff must match bit-for-bit for {}",
+                p1.name
+            );
+            assert_eq!(
+                p1.all_in_ev_diff_chips.to_bits(),
+                p2.all_in_ev_diff_chips.to_bits(),
+                "seeded all_in_ev_diff_chips must match bit-for-bit for {}",
+                p1.name
+            );
+        }
+    }
+
+    // Convergence test: 10 independent seeded runs on a preflop all-in hand
+    // must give a tight spread on the reported EV (equity-driven). The
+    // threshold follows the task spec — stddev of EV / pot_size < 0.5%.
+    #[test]
+    fn compute_stats_ev_converges_across_seeds() {
+        let b = preflop_allin_hand(1.0, 100.0, true);
+        let data = parse_game_data(&b);
+        let pot_bb = 200.0; // both players all-in for 100 BB each
+
+        let values: Vec<f64> = (0..10u64)
+            .map(|i| {
+                let cfg = EvConfig::deterministic(0xABCD_0000 + i);
+                let r = compute_stats_with_ev_config(&data, &cfg);
+                r.players.iter().find(|p| p.name == "Alice").unwrap().all_in_ev_diff
+            })
+            .collect();
+
+        let mean: f64 = values.iter().sum::<f64>() / values.len() as f64;
+        let var: f64 = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
+        let sd = var.sqrt();
+        let threshold = 0.005 * pot_bb; // 0.5% of pot per spec → 1.0 BB
+        assert!(
+            sd < threshold,
+            "stddev of EV across 10 seeded runs = {sd:.4} BB, threshold = {threshold:.4} BB"
         );
     }
 }

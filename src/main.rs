@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use indicatif::{ProgressBar, ProgressStyle};
 
 use pokernow::TableSize;
 use pokernow::config::{BlindRemap, Config};
@@ -61,11 +63,17 @@ struct Cli {
 
     /// Target session-aggregate all-in EV stddev across independent runs,
     /// in BB. The per-hand Monte Carlo target is auto-scaled from the
-    /// session's all-in pot distribution so this bound holds. Set to 0
-    /// (or negative) to disable auto-scaling and fall back to the fixed
-    /// per-hand target_stderr.
-    #[arg(long, default_value_t = 1.0)]
+    /// session's all-in pot distribution so this bound holds. Defaults to
+    /// 5 BB (fast, fine for routine use); pass 1.0 for careful analysis,
+    /// 0.3 for publication-quality. Set to 0 (or negative) to disable
+    /// auto-scaling and fall back to the fixed per-hand target_stderr.
+    #[arg(long, default_value_t = 5.0)]
     session_target_bb: f64,
+
+    /// Disable the Monte Carlo progress bar. The bar also auto-disables
+    /// whenever stdout is not a TTY (piped, redirected, captured).
+    #[arg(long)]
+    no_progress: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -311,6 +319,26 @@ fn gen_config() {
     );
 }
 
+/// Build a session-level progress bar. Auto-hidden (no output at all) when
+/// `disabled` is true, when the hand count is zero, or when stdout is not a
+/// TTY (piped, redirected, captured by a parent process). The hidden bar is
+/// a zero-cost no-op — `inc(1)` calls from the rayon workers are still safe
+/// but don't draw or print anything.
+fn make_progress_bar(total: u64, disabled: bool) -> ProgressBar {
+    if disabled || total == 0 || !std::io::stdout().is_terminal() {
+        return ProgressBar::hidden();
+    }
+    let pb = ProgressBar::new(total);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "  MC {bar:30.cyan/blue} {pos}/{len} hands  ETA {eta}  [{elapsed_precise}]",
+        )
+        .expect("static template is valid")
+        .progress_chars("##-"),
+    );
+    pb
+}
+
 fn is_log_file(path: &str) -> bool {
     let p = Path::new(path);
     matches!(p.extension().and_then(|e| e.to_str()), Some("log" | "txt"))
@@ -472,7 +500,9 @@ fn main() {
 
     match action {
         CliAction::Stats(player_filter) => {
-            let result = stats::compute_stats_with_ev_config(&data, &ev_cfg);
+            let progress = make_progress_bar(data.hands.len() as u64, cli.no_progress);
+            let result = stats::compute_stats_with_progress(&data, &ev_cfg, &progress);
+            progress.finish_and_clear();
             if let Some(ref name) = player_filter {
                 stats::print_single_player_stats(&result, name, use_chips);
             } else {
@@ -508,7 +538,9 @@ fn main() {
             search::print_results(&results, use_chips);
         }
         CliAction::Summary => {
-            summary::print_summary_with_ev_config(&data, use_chips, &ev_cfg);
+            let progress = make_progress_bar(data.hands.len() as u64, cli.no_progress);
+            summary::print_summary_with_progress(&data, use_chips, &ev_cfg, &progress);
+            progress.finish_and_clear();
         }
         CliAction::BestHands(filter) => {
             let results = ranking::rank_hands(&data, &filter);

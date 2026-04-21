@@ -1,15 +1,35 @@
 use std::collections::HashSet;
 
+use indicatif::ProgressBar;
+
 use crate::ev::EvConfig;
 use crate::parser::GameData;
 use crate::search::hand_pot_bb;
-use crate::stats::compute_stats_with_ev_config;
+use crate::stats::{compute_stats_with_ev_config, compute_stats_with_progress};
 
 pub fn print_summary(data: &GameData, use_chips: bool) {
     print_summary_with_ev_config(data, use_chips, &EvConfig::default());
 }
 
 pub fn print_summary_with_ev_config(data: &GameData, use_chips: bool, cfg: &EvConfig) {
+    print_summary_inner(data, use_chips, cfg, None);
+}
+
+pub fn print_summary_with_progress(
+    data: &GameData,
+    use_chips: bool,
+    cfg: &EvConfig,
+    progress: &ProgressBar,
+) {
+    print_summary_inner(data, use_chips, cfg, Some(progress));
+}
+
+fn print_summary_inner(
+    data: &GameData,
+    use_chips: bool,
+    cfg: &EvConfig,
+    progress: Option<&ProgressBar>,
+) {
     let hand_count = data.hands.len();
     if hand_count == 0 {
         println!("No hands to summarize.");
@@ -61,7 +81,10 @@ pub fn print_summary_with_ev_config(data: &GameData, use_chips: bool, cfg: &EvCo
         println!("Biggest pot: {} (Hand #{}) — {}", pot_display, h.number, winner_names.join(", "));
     }
 
-    let result = compute_stats_with_ev_config(data, cfg);
+    let result = match progress {
+        Some(pb) => compute_stats_with_progress(data, cfg, pb),
+        None => compute_stats_with_ev_config(data, cfg),
+    };
     println!();
 
     let pnl_header = if use_chips { "P&L" } else { "P&L (BB)" };
